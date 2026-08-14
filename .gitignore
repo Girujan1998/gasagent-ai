@@ -1,0 +1,16 @@
+# OS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+
+# Backend (Python)
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.pytest_cache/
+backend/*.egg-info/
+backend/.env
+
+# Note: mobile/ has its own .gitignore (node_modules, Pods, build/, etc.)

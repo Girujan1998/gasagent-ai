@@ -1,0 +1,214 @@
+import React, {useState} from 'react';
+import {Image, StyleSheet, Text, TouchableOpacity, View} from 'react-native';
+
+import {FuelPrice, GasStation} from '../api/client';
+import {useFavorites} from '../store/FavoritesContext';
+import {timeAgo} from '../utils/time';
+
+type Props = {
+  station: GasStation;
+};
+
+function renderStars(rating: number): string {
+  const rounded = Math.round(rating);
+  return '★'.repeat(rounded) + '☆'.repeat(Math.max(0, 5 - rounded));
+}
+
+function BrandLogo({url}: {url: string | null}): React.JSX.Element {
+  const [failed, setFailed] = useState(false);
+
+  if (url && !failed) {
+    return (
+      <Image
+        source={{uri: url}}
+        style={styles.logo}
+        resizeMode="contain"
+        onError={() => setFailed(true)}
+      />
+    );
+  }
+
+  return (
+    <View style={[styles.logo, styles.logoFallback]}>
+      <Text style={styles.logoFallbackIcon}>⛽</Text>
+    </View>
+  );
+}
+
+function PriceColumn({
+  label,
+  fuel,
+}: {
+  label: string;
+  fuel: FuelPrice | null;
+}): React.JSX.Element {
+  const priceText =
+    fuel?.formatted_price ??
+    (fuel?.price != null ? `$${fuel.price.toFixed(2)}` : '—');
+
+  return (
+    <View style={styles.priceColumn}>
+      <Text style={styles.priceLabel}>{label}</Text>
+      <Text style={styles.priceValue}>{priceText}</Text>
+      {fuel?.last_updated && (
+        <Text style={styles.priceAge}>{timeAgo(fuel.last_updated)}</Text>
+      )}
+    </View>
+  );
+}
+
+function StationCard({station}: Props): React.JSX.Element {
+  const {isFavorite, toggleFavorite} = useFavorites();
+  const favorited = isFavorite(station.station_id);
+
+  return (
+    <View style={styles.card}>
+      <View style={styles.headerRow}>
+        <View style={styles.brandRow}>
+          <BrandLogo url={station.brand_logo_url} />
+          <Text style={styles.name} numberOfLines={1}>
+            {station.brand || station.name}
+          </Text>
+        </View>
+
+        <View style={styles.headerRight}>
+          {station.distance_miles != null && (
+            <Text style={styles.distance}>
+              {station.distance_miles.toFixed(1)} mi
+            </Text>
+          )}
+          <TouchableOpacity
+            onPress={() => toggleFavorite(station)}
+            hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+            accessibilityLabel={
+              favorited ? 'Remove from favorites' : 'Add to favorites'
+            }>
+            <Text style={[styles.star, favorited && styles.starFilled]}>
+              {favorited ? '★' : '☆'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {station.address && (
+        <Text style={styles.address} numberOfLines={1}>
+          {station.address}
+        </Text>
+      )}
+
+      <View style={styles.pricesRow}>
+        <PriceColumn label="Regular" fuel={station.regular} />
+        <PriceColumn label="Premium" fuel={station.premium} />
+      </View>
+
+      {station.star_rating != null && (
+        <Text style={styles.rating}>
+          <Text style={styles.stars}>{renderStars(station.star_rating)}</Text>
+          {` ${station.star_rating.toFixed(1)}`}
+          {station.ratings_count != null ? ` (${station.ratings_count})` : ''}
+        </Text>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  card: {
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    padding: 14,
+    marginHorizontal: 16,
+    shadowColor: '#000',
+    shadowOffset: {width: 0, height: 1},
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  brandRow: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 8,
+  },
+  logo: {
+    width: 26,
+    height: 26,
+    borderRadius: 6,
+    marginRight: 8,
+    backgroundColor: '#f2f2f2',
+  },
+  logoFallback: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#dbe6f6',
+  },
+  logoFallbackIcon: {
+    fontSize: 14,
+  },
+  name: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  distance: {
+    fontSize: 13,
+    color: '#666',
+    marginRight: 8,
+  },
+  star: {
+    fontSize: 22,
+    color: '#ccc',
+  },
+  starFilled: {
+    color: '#f5a623',
+  },
+  address: {
+    fontSize: 12,
+    color: '#888',
+    marginTop: 2,
+  },
+  pricesRow: {
+    flexDirection: 'row',
+    marginTop: 12,
+  },
+  priceColumn: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  priceLabel: {
+    fontSize: 11,
+    color: '#888',
+    textTransform: 'uppercase',
+  },
+  priceValue: {
+    fontSize: 18,
+    fontWeight: '700',
+    marginTop: 2,
+    color: '#1565c0',
+  },
+  priceAge: {
+    fontSize: 11,
+    color: '#999',
+    marginTop: 2,
+  },
+  rating: {
+    marginTop: 12,
+    fontSize: 13,
+    color: '#666',
+    textAlign: 'center',
+  },
+  stars: {
+    color: '#f5a623',
+  },
+});
+
+export default StationCard;
