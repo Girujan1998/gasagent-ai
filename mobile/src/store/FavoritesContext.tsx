@@ -16,6 +16,7 @@ type FavoritesContextValue = {
   favorites: GasStation[];
   isFavorite: (stationId: string) => boolean;
   toggleFavorite: (station: GasStation) => void;
+  isReady: boolean;
 };
 
 const FavoritesContext = createContext<FavoritesContextValue | null>(null);
@@ -65,8 +66,8 @@ function FavoritesProvider({
   }, []);
 
   const value = useMemo(
-    () => ({favorites, isFavorite, toggleFavorite}),
-    [favorites, isFavorite, toggleFavorite],
+    () => ({favorites, isFavorite, toggleFavorite, isReady: loaded}),
+    [favorites, isFavorite, toggleFavorite, loaded],
   );
 
   return (

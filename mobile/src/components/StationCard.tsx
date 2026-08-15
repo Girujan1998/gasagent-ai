@@ -4,7 +4,8 @@ import {Image, StyleSheet, Text, TouchableOpacity, View} from 'react-native';
 import {FuelPrice, GasStation} from '../api/client';
 import {useFavorites} from '../store/FavoritesContext';
 import {milesToKm} from '../utils/distance';
-import {timeAgo} from '../utils/time';
+import {freshnessColor} from '../utils/freshness';
+import {minutesSince, timeAgo} from '../utils/time';
 
 type Props = {
   station: GasStation;
@@ -47,13 +48,21 @@ function PriceColumn({
   const priceText =
     fuel?.formatted_price ??
     (fuel?.price != null ? `$${fuel.price.toFixed(2)}` : '—');
+  const minutesAgo = minutesSince(fuel?.last_updated);
+  const highlight = minutesAgo != null ? freshnessColor(minutesAgo) : null;
 
   return (
     <View style={styles.priceColumn}>
       <Text style={styles.priceLabel}>{label}</Text>
-      <Text style={styles.priceValue}>{priceText}</Text>
+      <Text
+        style={[styles.priceValue, highlight != null && {color: highlight}]}>
+        {priceText}
+      </Text>
       {fuel?.last_updated && (
-        <Text style={styles.priceAge}>{timeAgo(fuel.last_updated)}</Text>
+        <Text
+          style={[styles.priceAge, highlight != null && {color: highlight}]}>
+          {timeAgo(fuel.last_updated)}
+        </Text>
       )}
     </View>
   );

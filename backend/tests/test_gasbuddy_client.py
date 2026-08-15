@@ -131,3 +131,26 @@ def test_to_gas_station_has_no_connected_brand_for_single_brand_station():
     assert station.brand == "Shell"
     assert station.connected_brand is None
     assert station.connected_brand_logo_url is None
+
+
+def test_to_gas_station_maps_amenity_names():
+    raw = {
+        "station_id": "11982",
+        "name": "Esso",
+        "amenities": [
+            {"amenityId": 1, "name": "Car Wash", "imageUrl": None},
+            {"amenityId": 2, "name": "Restrooms", "imageUrl": None},
+        ],
+    }
+
+    station = _to_gas_station(raw)
+
+    assert station.amenities == ["Car Wash", "Restrooms"]
+
+
+def test_to_gas_station_has_no_amenities_when_missing():
+    raw = {"station_id": "1", "name": "Shell"}
+
+    station = _to_gas_station(raw)
+
+    assert station.amenities == []

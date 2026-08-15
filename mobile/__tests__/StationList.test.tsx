@@ -28,6 +28,7 @@ const station: GasStation = {
   diesel: {price: 3.99, formatted_price: '$3.99', last_updated: null},
   star_rating: 4.5,
   ratings_count: 120,
+  amenities: ['Car Wash', 'Restrooms'],
 };
 
 it('opens a detail modal on tap, and closes it via the close button', async () => {
@@ -75,12 +76,43 @@ it('opens a detail modal on tap, and closes it via the close button', async () =
   expect(textNodes).toContain('2.4 km away');
   // ...and the connected brand too.
   expect(textNodes).toContain('with Circle K');
+  // ...and the station's amenities.
+  expect(textNodes).toEqual(
+    expect.arrayContaining(['Car Wash', 'Restrooms']),
+  );
 
   await act(async () => {
     renderer!.root.findByProps({accessibilityLabel: 'Close'}).props.onPress();
   });
 
   expect(renderer!.root.findByType(Modal).props.visible).toBe(false);
+});
+
+it('hides the amenities section for a station with none reported', async () => {
+  const stationWithNoAmenities: GasStation = {...station, amenities: []};
+
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      <FavoritesProvider>
+        <StationList
+          stations={[stationWithNoAmenities]}
+          loading={false}
+          error={null}
+        />
+      </FavoritesProvider>,
+    );
+  });
+
+  await act(async () => {
+    renderer!.root
+      .findByProps({accessibilityLabel: 'View details for Shell'})
+      .props.onPress();
+  });
+
+  expect(
+    renderer!.root.findAllByProps({children: 'Features & Amenities'}),
+  ).toHaveLength(0);
 });
 
 it('opens the device maps app with the station location when Navigate is pressed', async () => {

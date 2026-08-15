@@ -1,14 +1,24 @@
-export function timeAgo(isoTimestamp: string | null | undefined): string {
+export function minutesSince(
+  isoTimestamp: string | null | undefined,
+): number | null {
   if (!isoTimestamp) {
-    return 'unknown';
+    return null;
   }
 
   const then = new Date(isoTimestamp).getTime();
   if (Number.isNaN(then)) {
+    return null;
+  }
+
+  return Math.floor((Date.now() - then) / 60000);
+}
+
+export function timeAgo(isoTimestamp: string | null | undefined): string {
+  const diffMinutes = minutesSince(isoTimestamp);
+  if (diffMinutes === null) {
     return 'unknown';
   }
 
-  const diffMinutes = Math.floor((Date.now() - then) / 60000);
   if (diffMinutes < 1) {
     return 'just now';
   }

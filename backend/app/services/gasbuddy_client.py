@@ -25,6 +25,10 @@ def _to_fuel_price(node: dict[str, Any] | None) -> FuelPrice | None:
     )
 
 
+def _amenity_names(amenities: list[dict[str, Any]]) -> list[str]:
+    return [a["name"] for a in amenities if isinstance(a, dict) and a.get("name")]
+
+
 def _select_brands(
     brands: list[dict[str, Any]], station_name: str
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -90,6 +94,7 @@ def _to_gas_station(raw: dict[str, Any]) -> GasStation:
         diesel=_to_fuel_price(raw.get("diesel")),
         star_rating=raw.get("star_rating"),
         ratings_count=raw.get("ratings_count"),
+        amenities=_amenity_names(raw.get("amenities") or []),
     )
 
 

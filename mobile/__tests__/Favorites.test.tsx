@@ -31,6 +31,7 @@ const station: GasStation = {
   diesel: null,
   star_rating: null,
   ratings_count: null,
+  amenities: [],
 };
 
 beforeEach(async () => {

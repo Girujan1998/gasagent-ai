@@ -13,7 +13,8 @@ import HomeScreen, {
   PersistedSearch,
 } from './src/screens/HomeScreen';
 import PlaceholderScreen from './src/screens/PlaceholderScreen';
-import {FavoritesProvider} from './src/store/FavoritesContext';
+import SplashScreen from './src/screens/SplashScreen';
+import {FavoritesProvider, useFavorites} from './src/store/FavoritesContext';
 
 const PLACEHOLDER_TITLES: Record<
   Exclude<TabKey, 'home' | 'favorites'>,
@@ -47,8 +48,8 @@ function ActiveScreen({
   return <PlaceholderScreen title={PLACEHOLDER_TITLES[activeTab]} />;
 }
 
-function App(): React.JSX.Element {
-  const isDarkMode = useColorScheme() === 'dark';
+function AppContent(): React.JSX.Element {
+  const {isReady} = useFavorites();
   const [activeTab, setActiveTab] = useState<TabKey>('home');
   // Lifted above HomeScreen so it survives HomeScreen unmounting when the
   // user switches to another tab and back — see the PersistedSearch doc
@@ -57,18 +58,31 @@ function App(): React.JSX.Element {
     INITIAL_PERSISTED_SEARCH,
   );
 
+  if (!isReady) {
+    return <SplashScreen />;
+  }
+
+  return (
+    <>
+      <ActiveScreen
+        activeTab={activeTab}
+        persistedSearch={persistedSearch}
+        onSearchComplete={setPersistedSearch}
+      />
+
+      <BottomNavBar activeTab={activeTab} onTabPress={setActiveTab} />
+    </>
+  );
+}
+
+function App(): React.JSX.Element {
+  const isDarkMode = useColorScheme() === 'dark';
+
   return (
     <FavoritesProvider>
       <SafeAreaView style={styles.container}>
         <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
-
-        <ActiveScreen
-          activeTab={activeTab}
-          persistedSearch={persistedSearch}
-          onSearchComplete={setPersistedSearch}
-        />
-
-        <BottomNavBar activeTab={activeTab} onTabPress={setActiveTab} />
+        <AppContent />
       </SafeAreaView>
     </FavoritesProvider>
   );

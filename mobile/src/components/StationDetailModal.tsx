@@ -10,8 +10,9 @@ import {
 
 import {FuelPrice, GasStation} from '../api/client';
 import {milesToKm} from '../utils/distance';
+import {freshnessColor} from '../utils/freshness';
 import {openDirections} from '../utils/maps';
-import {timeAgo} from '../utils/time';
+import {minutesSince, timeAgo} from '../utils/time';
 
 type Props = {
   station: GasStation | null;
@@ -66,14 +67,28 @@ function PriceRow({
   const priceText =
     fuel.formatted_price ??
     (fuel.price != null ? `$${fuel.price.toFixed(2)}` : '—');
+  const minutesAgo = minutesSince(fuel.last_updated);
+  const highlight = minutesAgo != null ? freshnessColor(minutesAgo) : null;
 
   return (
     <View style={styles.priceRow}>
       <Text style={styles.priceRowLabel}>{label}</Text>
       <View style={styles.priceRowValues}>
-        <Text style={styles.priceRowValue}>{priceText}</Text>
+        <Text
+          style={[
+            styles.priceRowValue,
+            highlight != null && {color: highlight},
+          ]}>
+          {priceText}
+        </Text>
         {fuel.last_updated && (
-          <Text style={styles.priceRowAge}>{timeAgo(fuel.last_updated)}</Text>
+          <Text
+            style={[
+              styles.priceRowAge,
+              highlight != null && {color: highlight},
+            ]}>
+            {timeAgo(fuel.last_updated)}
+          </Text>
         )}
       </View>
     </View>
@@ -136,6 +151,21 @@ function StationDetailModal({station, onClose}: Props): React.JSX.Element {
                 <PriceRow label="Premium" fuel={station.premium} />
                 <PriceRow label="Diesel" fuel={station.diesel} />
               </View>
+
+              {station.amenities.length > 0 && (
+                <View style={styles.amenitiesSection}>
+                  <Text style={styles.amenitiesLabel}>
+                    Features & Amenities
+                  </Text>
+                  <View style={styles.amenitiesList}>
+                    {station.amenities.map(amenity => (
+                      <View key={amenity} style={styles.amenityChip}>
+                        <Text style={styles.amenityChipText}>{amenity}</Text>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )}
 
               {station.star_rating != null && (
                 <Text style={styles.rating}>
@@ -286,6 +316,30 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#999',
     marginTop: 1,
+  },
+  amenitiesSection: {
+    marginTop: 20,
+  },
+  amenitiesLabel: {
+    fontSize: 12,
+    color: '#888',
+    textTransform: 'uppercase',
+    marginBottom: 8,
+  },
+  amenitiesList: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  amenityChip: {
+    backgroundColor: '#f2f2f2',
+    borderRadius: 12,
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+  },
+  amenityChipText: {
+    fontSize: 12,
+    color: '#444',
   },
   rating: {
     marginTop: 16,

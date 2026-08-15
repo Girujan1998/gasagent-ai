@@ -32,6 +32,7 @@ class GasStation(BaseModel):
     diesel: FuelPrice | None = None
     star_rating: float | None = None
     ratings_count: int | None = None
+    amenities: list[str] = []
 
 
 class StationSearchResponse(BaseModel):

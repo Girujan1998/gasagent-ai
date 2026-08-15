@@ -35,6 +35,7 @@ export type GasStation = {
   diesel: FuelPrice | null;
   star_rating: number | null;
   ratings_count: number | null;
+  amenities: string[];
 };
 
 export type StationSearchResponse = {
