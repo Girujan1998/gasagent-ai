@@ -1,4 +1,4 @@
-# GasAIAgent
+# GasAgent.ai
 
 Cross-platform mobile app (React Native, iOS + Android) backed by a FastAPI
 service. Search a city, postal code, or your current GPS location to find
@@ -9,7 +9,7 @@ last updated), distance, and star rating — via the
 ## Structure
 
 ```
-GasAIAgent/
+GasAgent.ai/
   mobile/    React Native (TypeScript) app — targets iOS and Android
   backend/   FastAPI service — hosts the API layer for the mobile app
 ```
@@ -51,9 +51,34 @@ Run tests: `pytest`
 Query params: `query` (city name or postal code) **or** `lat`+`lon`, plus
 optional `limit` (default 10, max 20) and `cursor` (see Pagination below).
 Returns up to `limit` stations sorted by distance, each with `brand`,
-`brand_logo_url`, `address`, `distance_miles`, `regular` / `premium`
-(`{price, formatted_price, last_updated}`), `star_rating`, and
-`ratings_count`.
+`brand_logo_url`, `connected_brand`, `connected_brand_logo_url`, `address`,
+`latitude`/`longitude`, `distance_miles`, `regular` / `midgrade` /
+`premium` / `diesel` (each `{price, formatted_price, last_updated}`),
+`star_rating`, and `ratings_count`.
+
+**Multi-brand stations** (`brand` vs. `connected_brand`): GasBuddy
+sometimes lists more than one brand for a single station — e.g. Circle K
+bought Esso's Canadian retail network, so a station can be a Circle
+K-branded store selling Esso fuel, with `brands: [{name: "Circle K",
+brandingType: "cstore"}, {name: "Esso", brandingType: "fuel"}]` and
+`name: "Esso"`. `_select_brands()` in `gasbuddy_client.py` picks whichever
+listed brand's `name` matches the station's own top-level `name` field as
+`brand` (falling back to the first listed brand if none match — e.g. the
+name is a street address); any other brand becomes `connected_brand`. So
+for the example above, the response is `brand: "Esso"` (correct — that's
+what the pumps actually say) with `connected_brand: "Circle K"` riding
+along as secondary info, not `brand: "Circle K"` (the old behavior, which
+just took `brands[0]` unconditionally and got it backwards for this case).
+Verified against a real station: 100 Jamieson Pkwy, Cambridge, ON.
+
+**Duplicate brand entries are treated as no connected brand.** GasBuddy's
+data isn't always a genuine multi-brand list — some stations list the same
+brand twice (identical name, logo, everything), not a real second brand.
+`_select_brands()` skips any candidate whose `name` matches the primary's
+(case-insensitively), so `connected_brand` stays `null` rather than
+showing a redundant "with Esso" on an Esso station. Verified against a
+real station that surfaced this exact bug: 684 Hespeler Rd, Cambridge,
+ON — `brands` was `[{name: "Esso", ...}, {name: "Esso", ...}]`.
 
 **Pagination:** the response also includes `next_cursor` (`null` once
 there are no more results), and `lat`/`lon` — the coordinates actually
@@ -102,6 +127,17 @@ extra network call, and not guaranteed to resolve identically twice).
 
 ## Mobile app (`mobile/`)
 
+**App display name is "GasAgent.ai"** (`app.json`'s `displayName`, iOS
+`CFBundleDisplayName`, Android `strings.xml`'s `app_name`, and the in-app
+title text) — this is what users see. The underlying project identifiers
+(`GasAIAgentMobile` npm package name, Xcode project/scheme, Android
+package `com.gasaiagentmobile`, the `mobile/` folder itself) are
+deliberately **not** renamed to match: doing so means new bundle IDs,
+re-signing, moving native source directories to match a new package
+structure, and re-registering the Xcode project — a much bigger, riskier
+change than "update the app's name" implies. Say the word if you want that
+deeper rename too.
+
 Standard React Native TypeScript project (`react-native init`, pinned to **0.73.9**
 — see note below), plus:
 
@@ -115,12 +151,14 @@ mobile/
     screens/FavoritesScreen.tsx      Favorited stations + the location-share banner (the "Favorites" tab)
     screens/PlaceholderScreen.tsx    "Coming soon" screen used for Search/Chat/Personal
     components/LocationSearchBar.tsx Top search bar: city/postal code text, or current GPS location
-    components/StationList.tsx       Loading/error/empty states + the results FlatList
-    components/StationCard.tsx       One station: logo, brand, distance, prices, rating, favorite star
+    components/StationList.tsx       Loading/error/empty states + the results FlatList + detail modal state
+    components/StationCard.tsx       One station, tappable: logo, brand, distance, prices, rating, favorite star
+    components/StationDetailModal.tsx Bottom-sheet popup: full station details + "Navigate" button
     store/FavoritesContext.tsx       AsyncStorage-backed favorites list, shared via React context
     utils/time.ts                    "Xm/Xh/Xd ago" formatting for price last_updated timestamps
-    utils/distance.ts                Haversine distance — used for live-recomputing favorites' distance
+    utils/distance.ts                Haversine distance (favorites) + miles->km conversion (detail modal)
     utils/location.ts                Shared Android location-permission request (used by search + favorites)
+    utils/maps.ts                    Opens the device's default maps app with directions to a station
 ```
 
 Tab switching is plain local state in `App.tsx` (no routing library yet) —
@@ -160,6 +198,62 @@ initials) for stations with no `brand_logo_url` or a broken image URL —
 this is common for smaller/independent stations, which GasBuddy often has
 no brand image for at all (e.g. an empty `brands` list). Confirmed against
 a real one ("PS Fuels" near Elgin, IL).
+
+**Connected brand:** when a station has a `connected_brand` (see the
+backend section above), both `StationCard` and `StationDetailModal` show
+it as a small italic line — "*with Circle K*", its own tiny logo if
+available — directly under the primary brand name, never styled as if it
+were co-equal with the primary. Same component in both places, so search
+results and Favorites render it identically.
+
+**Station detail popup:** tapping a `StationCard` (in search results *or*
+Favorites — same component, same behavior) opens `StationDetailModal` as a
+bottom-sheet popup (React Native's built-in `Modal`, `transparent` +
+`animationType="slide"`) rather than navigating to a new screen — there's
+no navigation library in this app, and a modal is the simpler, correct fit
+here anyway. It shows the brand logo, name, address, distance, all four
+fuel grades (regular/midgrade/premium/diesel, added to the backend schema
+for this — previously only regular/premium were exposed), star rating, and
+a "Navigate" button. The ✕ close button lives in `StationCard`'s top-right
+corner of the sheet. The favorite star inside `StationCard` still works
+normally when the card is tappable — nested `TouchableOpacity` correctly
+claims its own touch in React Native, so starring a card never also opens
+the modal.
+
+**Distance is shown in kilometers, everywhere** — both the compact
+`StationCard` badge (search results and Favorites) and the expanded
+`StationDetailModal`. The backend's `distance_miles` field name stays as
+is (that's the unit GasBuddy itself reports, and it's also what
+`FavoritesScreen`'s Haversine recompute produces — see below), and
+`utils/distance.ts`'s `milesToKm()` converts it at render time in both
+components — a display-only conversion, not a data model change.
+
+The Navigate button's icon (`StationDetailModal`'s `NavigateIcon`) is a
+small hand-built circle-and-arrow — a cyan circle, white ring border, white
+triangular arrow rotated 45° via the classic RN "CSS-triangle" trick
+(transparent side borders + one colored border edge) — matching a
+reference image the user supplied, without pulling in an SVG/icon library
+for one glyph.
+
+**Time-since-updated granularity:** `utils/time.ts`'s `timeAgo()` now shows
+minutes alongside hours once there's more than an hour of leftover minutes
+— `"2h 15m ago"` rather than rounding down to `"2h ago"` — for anything
+under 24 hours old. Exact-hour timestamps (e.g. precisely 120 minutes) still
+show as just `"2h ago"`, no `"2h 0m"`. Shared by both `StationCard`'s
+compact price row and `StationDetailModal`'s expanded one, so both stay
+consistent automatically.
+
+`utils/maps.ts`'s `openDirections()` opens the device's default maps app:
+`maps:0,0?q=<label>@<lat>,<lng>` on iOS, `geo:0,0?q=<lat>,<lng>(<label>)`
+on Android, falling back to a `google.com/maps` web URL if the native
+scheme fails to open (e.g. no maps app registered) or on any other
+platform. Not tested by actually tapping the button in the Simulator —
+this environment can't simulate real touch gestures — so it's verified
+with a test asserting `Linking.openURL` is called with a URL containing
+the station's coordinates. Worth an actual on-device tap-through before
+shipping, since the exact scheme behavior (does it fall through to Apple
+Maps correctly, etc.) is the one thing a mocked `Linking` call can't
+confirm.
 
 **Bottom nav dead zones (fixed):** tapping a tab worked inconsistently
 depending on exactly where on it you tapped. Two compounding causes, both

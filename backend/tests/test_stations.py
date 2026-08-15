@@ -23,9 +23,19 @@ def make_station(station_id: str) -> GasStation:
             formatted_price="$3.19",
             last_updated="2026-08-14T12:00:00Z",
         ),
+        midgrade=FuelPrice(
+            price=3.49,
+            formatted_price="$3.49",
+            last_updated="2026-08-14T12:00:00Z",
+        ),
         premium=FuelPrice(
             price=3.79,
             formatted_price="$3.79",
+            last_updated="2026-08-14T12:00:00Z",
+        ),
+        diesel=FuelPrice(
+            price=3.99,
+            formatted_price="$3.99",
             last_updated="2026-08-14T12:00:00Z",
         ),
         star_rating=4.5,
@@ -80,7 +90,9 @@ def test_search_returns_stations():
     assert station["longitude"] == -87.65
     assert station["distance_miles"] == 1.2
     assert station["regular"]["price"] == 3.19
+    assert station["midgrade"]["price"] == 3.49
     assert station["premium"]["price"] == 3.79
+    assert station["diesel"]["price"] == 3.99
     assert station["star_rating"] == 4.5
     assert station["ratings_count"] == 120
     assert body["next_cursor"] is None

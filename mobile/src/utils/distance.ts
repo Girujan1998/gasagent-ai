@@ -1,7 +1,12 @@
 const EARTH_RADIUS_MILES = 3958.8;
+const MILES_TO_KM = 1.60934;
 
 function toRadians(degrees: number): number {
   return (degrees * Math.PI) / 180;
+}
+
+export function milesToKm(miles: number): number {
+  return miles * MILES_TO_KM;
 }
 
 export function haversineMiles(

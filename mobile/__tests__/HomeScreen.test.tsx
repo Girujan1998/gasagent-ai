@@ -15,7 +15,7 @@ import {FavoritesProvider} from '../src/store/FavoritesContext';
 
 const healthResponse = {
   ok: true,
-  json: () => Promise.resolve({status: 'ok', app_name: 'GasAIAgent API'}),
+  json: () => Promise.resolve({status: 'ok', app_name: 'GasAgent.ai API'}),
 };
 
 function stationsResponse(names: string[], nextCursor: string | null) {
@@ -33,7 +33,9 @@ function stationsResponse(names: string[], nextCursor: string | null) {
           longitude: null,
           distance_miles: 1,
           regular: null,
+          midgrade: null,
           premium: null,
+          diesel: null,
           star_rating: null,
           ratings_count: null,
         })),

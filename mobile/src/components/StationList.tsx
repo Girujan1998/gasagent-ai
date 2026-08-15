@@ -1,4 +1,4 @@
-import React from 'react';
+import React, {useCallback, useState} from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -9,6 +9,7 @@ import {
 
 import {GasStation} from '../api/client';
 import StationCard from './StationCard';
+import StationDetailModal from './StationDetailModal';
 
 type Props = {
   stations: GasStation[];
@@ -21,10 +22,6 @@ type Props = {
 
 function renderSeparator(): React.JSX.Element {
   return <View style={styles.separator} />;
-}
-
-function renderStation({item}: {item: GasStation}): React.JSX.Element {
-  return <StationCard station={item} />;
 }
 
 function ListFooter({
@@ -46,6 +43,17 @@ function StationList({
   loadingMore = false,
   emptyMessage = 'No stations found nearby.',
 }: Props): React.JSX.Element {
+  const [selectedStation, setSelectedStation] = useState<GasStation | null>(
+    null,
+  );
+
+  const renderStation = useCallback(
+    ({item}: {item: GasStation}) => (
+      <StationCard station={item} onPress={() => setSelectedStation(item)} />
+    ),
+    [],
+  );
+
   if (loading) {
     return <ActivityIndicator style={styles.spacing} />;
   }
@@ -59,17 +67,23 @@ function StationList({
   }
 
   return (
-    <FlatList
-      style={styles.list}
-      contentContainerStyle={styles.listContent}
-      data={stations}
-      keyExtractor={item => item.station_id}
-      renderItem={renderStation}
-      ItemSeparatorComponent={renderSeparator}
-      onEndReached={onEndReached}
-      onEndReachedThreshold={0.5}
-      ListFooterComponent={<ListFooter loadingMore={loadingMore} />}
-    />
+    <>
+      <FlatList
+        style={styles.list}
+        contentContainerStyle={styles.listContent}
+        data={stations}
+        keyExtractor={item => item.station_id}
+        renderItem={renderStation}
+        ItemSeparatorComponent={renderSeparator}
+        onEndReached={onEndReached}
+        onEndReachedThreshold={0.5}
+        ListFooterComponent={<ListFooter loadingMore={loadingMore} />}
+      />
+      <StationDetailModal
+        station={selectedStation}
+        onClose={() => setSelectedStation(null)}
+      />
+    </>
   );
 }
 

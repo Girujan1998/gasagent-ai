@@ -25,6 +25,36 @@ def _to_fuel_price(node: dict[str, Any] | None) -> FuelPrice | None:
     )
 
 
+def _select_brands(
+    brands: list[dict[str, Any]], station_name: str
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Pick the primary brand and, if present, one *distinct* connected brand.
+
+    GasBuddy can list multiple brands for a single station — e.g. a Circle
+    K-branded store selling Esso fuel. The station's own `name` field is
+    what identifies the primary brand; any other entry is a connected
+    brand, not a co-equal primary. Falls back to the first listed brand if
+    none match `name` (e.g. the name is a street address or generic label).
+
+    GasBuddy's data sometimes lists the same brand twice (identical name,
+    logo, everything) rather than a genuine second brand — that's treated
+    as if there were no connected brand at all, not shown as one.
+    """
+    if not brands:
+        return None, None
+
+    primary = next(
+        (b for b in brands if (b.get("name") or "").lower() == station_name.lower()),
+        brands[0],
+    )
+    primary_name = (primary.get("name") or "").lower()
+    secondary = next(
+        (b for b in brands if (b.get("name") or "").lower() != primary_name),
+        None,
+    )
+    return primary, secondary
+
+
 def _to_gas_station(raw: dict[str, Any]) -> GasStation:
     address = raw.get("address") or {}
     address_parts = [
@@ -35,20 +65,29 @@ def _to_gas_station(raw: dict[str, Any]) -> GasStation:
     address_line = ", ".join(part for part in address_parts if part) or None
 
     brands = raw.get("brands") or []
-    brand_name = brands[0].get("name") if brands else None
-    brand_logo_url = brands[0].get("imageUrl") if brands else None
+    primary_brand, connected_brand = _select_brands(brands, raw.get("name") or "")
+    brand_name = primary_brand.get("name") if primary_brand else None
+    brand_logo_url = primary_brand.get("imageUrl") if primary_brand else None
+    connected_brand_name = connected_brand.get("name") if connected_brand else None
+    connected_brand_logo_url = (
+        connected_brand.get("imageUrl") if connected_brand else None
+    )
 
     return GasStation(
         station_id=str(raw["station_id"]),
         name=raw.get("name") or "",
         brand=brand_name,
         brand_logo_url=brand_logo_url,
+        connected_brand=connected_brand_name,
+        connected_brand_logo_url=connected_brand_logo_url,
         address=address_line,
         latitude=raw.get("latitude"),
         longitude=raw.get("longitude"),
         distance_miles=raw.get("distance"),
         regular=_to_fuel_price(raw.get("regular_gas")),
+        midgrade=_to_fuel_price(raw.get("midgrade_gas")),
         premium=_to_fuel_price(raw.get("premium_gas")),
+        diesel=_to_fuel_price(raw.get("diesel")),
         star_rating=raw.get("star_rating"),
         ratings_count=raw.get("ratings_count"),
     )

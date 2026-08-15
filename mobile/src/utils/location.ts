@@ -8,7 +8,7 @@ export async function requestLocationPermission(): Promise<boolean> {
     PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
     {
       title: 'Location permission',
-      message: 'GasAIAgent uses your location to find nearby results.',
+      message: 'GasAgent.ai uses your location to find nearby results.',
       buttonPositive: 'Allow',
       buttonNegative: 'Deny',
     },

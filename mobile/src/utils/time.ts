@@ -18,7 +18,10 @@ export function timeAgo(isoTimestamp: string | null | undefined): string {
 
   const diffHours = Math.floor(diffMinutes / 60);
   if (diffHours < 24) {
-    return `${diffHours}h ago`;
+    const remainingMinutes = diffMinutes % 60;
+    return remainingMinutes > 0
+      ? `${diffHours}h ${remainingMinutes}m ago`
+      : `${diffHours}h ago`;
   }
 
   const diffDays = Math.floor(diffHours / 24);

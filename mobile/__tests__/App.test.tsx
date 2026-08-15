@@ -16,7 +16,7 @@ beforeEach(() => {
   global.fetch = jest.fn(() =>
     Promise.resolve({
       ok: true,
-      json: () => Promise.resolve({status: 'ok', app_name: 'GasAIAgent API'}),
+      json: () => Promise.resolve({status: 'ok', app_name: 'GasAgent.ai API'}),
     }),
   ) as unknown as typeof fetch;
 });

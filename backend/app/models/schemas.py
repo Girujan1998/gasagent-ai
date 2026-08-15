@@ -17,12 +17,19 @@ class GasStation(BaseModel):
     name: str
     brand: str | None = None
     brand_logo_url: str | None = None
+    # A second brand on the same station (e.g. an Esso-fuel station
+    # operating under a Circle K storefront) — shown as a connected/
+    # secondary brand, never as the primary one.
+    connected_brand: str | None = None
+    connected_brand_logo_url: str | None = None
     address: str | None = None
     latitude: float | None = None
     longitude: float | None = None
     distance_miles: float | None = None
     regular: FuelPrice | None = None
+    midgrade: FuelPrice | None = None
     premium: FuelPrice | None = None
+    diesel: FuelPrice | None = None
     star_rating: float | None = None
     ratings_count: int | None = None
 

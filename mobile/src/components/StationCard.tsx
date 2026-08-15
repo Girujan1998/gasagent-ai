@@ -3,10 +3,12 @@ import {Image, StyleSheet, Text, TouchableOpacity, View} from 'react-native';
 
 import {FuelPrice, GasStation} from '../api/client';
 import {useFavorites} from '../store/FavoritesContext';
+import {milesToKm} from '../utils/distance';
 import {timeAgo} from '../utils/time';
 
 type Props = {
   station: GasStation;
+  onPress?: () => void;
 };
 
 function renderStars(rating: number): string {
@@ -57,24 +59,45 @@ function PriceColumn({
   );
 }
 
-function StationCard({station}: Props): React.JSX.Element {
+function StationCard({station, onPress}: Props): React.JSX.Element {
   const {isFavorite, toggleFavorite} = useFavorites();
   const favorited = isFavorite(station.station_id);
 
   return (
-    <View style={styles.card}>
+    <TouchableOpacity
+      style={styles.card}
+      onPress={onPress}
+      disabled={!onPress}
+      activeOpacity={0.85}
+      accessibilityLabel={`View details for ${station.brand || station.name}`}>
       <View style={styles.headerRow}>
         <View style={styles.brandRow}>
           <BrandLogo url={station.brand_logo_url} />
-          <Text style={styles.name} numberOfLines={1}>
-            {station.brand || station.name}
-          </Text>
+          <View style={styles.brandTextColumn}>
+            <Text style={styles.name} numberOfLines={1}>
+              {station.brand || station.name}
+            </Text>
+            {station.connected_brand && (
+              <View style={styles.connectedBrandRow}>
+                {station.connected_brand_logo_url && (
+                  <Image
+                    source={{uri: station.connected_brand_logo_url}}
+                    style={styles.connectedBrandLogo}
+                    resizeMode="contain"
+                  />
+                )}
+                <Text style={styles.connectedBrandText} numberOfLines={1}>
+                  with {station.connected_brand}
+                </Text>
+              </View>
+            )}
+          </View>
         </View>
 
         <View style={styles.headerRight}>
           {station.distance_miles != null && (
             <Text style={styles.distance}>
-              {station.distance_miles.toFixed(1)} mi
+              {milesToKm(station.distance_miles).toFixed(1)} km
             </Text>
           )}
           <TouchableOpacity
@@ -108,7 +131,7 @@ function StationCard({station}: Props): React.JSX.Element {
           {station.ratings_count != null ? ` (${station.ratings_count})` : ''}
         </Text>
       )}
-    </View>
+    </TouchableOpacity>
   );
 }
 
@@ -150,10 +173,28 @@ const styles = StyleSheet.create({
   logoFallbackIcon: {
     fontSize: 14,
   },
-  name: {
+  brandTextColumn: {
     flex: 1,
+  },
+  name: {
     fontSize: 16,
     fontWeight: '700',
+  },
+  connectedBrandRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 2,
+  },
+  connectedBrandLogo: {
+    width: 12,
+    height: 12,
+    borderRadius: 3,
+    marginRight: 4,
+  },
+  connectedBrandText: {
+    fontSize: 11,
+    color: '#888',
+    fontStyle: 'italic',
   },
   headerRight: {
     flexDirection: 'row',

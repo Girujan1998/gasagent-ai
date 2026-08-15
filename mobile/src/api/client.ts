@@ -23,12 +23,16 @@ export type GasStation = {
   name: string;
   brand: string | null;
   brand_logo_url: string | null;
+  connected_brand: string | null;
+  connected_brand_logo_url: string | null;
   address: string | null;
   latitude: number | null;
   longitude: number | null;
   distance_miles: number | null;
   regular: FuelPrice | null;
+  midgrade: FuelPrice | null;
   premium: FuelPrice | null;
+  diesel: FuelPrice | null;
   star_rating: number | null;
   ratings_count: number | null;
 };

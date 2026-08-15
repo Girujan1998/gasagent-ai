@@ -154,7 +154,7 @@ function HomeScreen({
         />
       ) : (
         <View style={styles.intro}>
-          <Text style={styles.title}>GasAIAgent</Text>
+          <Text style={styles.title}>GasAgent.ai</Text>
           <Text style={styles.subtitle}>
             Search a city, postal code, or use your current location to find the
             10 nearest gas stations.
