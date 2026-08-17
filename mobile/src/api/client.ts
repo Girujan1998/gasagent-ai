@@ -45,7 +45,43 @@ export type StationSearchResponse = {
   lon: number;
 };
 
+export type LocationSuggestion = {
+  label: string;
+  value: string;
+};
+
+export type LocationAutocompleteResponse = {
+  results: LocationSuggestion[];
+};
+
 export type StationSearchParams = {query: string} | {lat: number; lon: number};
+
+export type EvStation = {
+  station_id: string;
+  name: string;
+  network: string | null;
+  network_web: string | null;
+  address: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  distance_miles: number | null;
+  phone: string | null;
+  access_hours: string | null;
+  access_code: string | null;
+  status_code: string | null;
+  level1_count: number | null;
+  level2_count: number | null;
+  dc_fast_count: number | null;
+  connector_types: string[];
+  date_last_confirmed: string | null;
+};
+
+export type EvStationSearchResponse = {
+  results: EvStation[];
+  total_results: number;
+  lat: number;
+  lon: number;
+};
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -64,6 +100,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function getHealth(): Promise<HealthResponse> {
   return request<HealthResponse>('/health');
+}
+
+export function getLocationAutocomplete(
+  query: string,
+): Promise<LocationAutocompleteResponse> {
+  return request<LocationAutocompleteResponse>(
+    `/locations/autocomplete?query=${encodeURIComponent(query)}`,
+  );
 }
 
 export function searchNearestStations(
@@ -87,5 +131,31 @@ export function searchNearestStations(
   }
   return request<StationSearchResponse>(
     `/stations/search?${queryParts.join('&')}`,
+  );
+}
+
+// NREL AFDC has no cursor-based pagination — `limit` is the total number of
+// nearest stations to return in one call, already sorted by distance, so
+// "load more" means re-requesting with a bigger limit and replacing the
+// results, not appending a new page.
+export function searchNearestEvStations(
+  params: StationSearchParams,
+  limit: number = 20,
+  radiusKm?: number,
+): Promise<EvStationSearchResponse> {
+  const queryParts = [`limit=${encodeURIComponent(limit)}`];
+  if ('query' in params) {
+    queryParts.push(`query=${encodeURIComponent(params.query)}`);
+  } else {
+    queryParts.push(
+      `lat=${encodeURIComponent(params.lat)}`,
+      `lon=${encodeURIComponent(params.lon)}`,
+    );
+  }
+  if (radiusKm != null) {
+    queryParts.push(`radius_km=${encodeURIComponent(radiusKm)}`);
+  }
+  return request<EvStationSearchResponse>(
+    `/ev-stations/search?${queryParts.join('&')}`,
   );
 }

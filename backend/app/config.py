@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     app_name: str = "GasAgent.ai API"
     api_v1_prefix: str = "/api/v1"
     cors_origins: list[str] = ["*"]
+    nrel_api_key: str = ""
 
 
 @lru_cache

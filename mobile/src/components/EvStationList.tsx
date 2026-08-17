@@ -9,15 +9,12 @@ import {
   View,
 } from 'react-native';
 
-import {GasStation} from '../api/client';
-import {FuelKey} from '../config/fuelDisplay';
-import StationCard from './StationCard';
-import StationDetailModal from './StationDetailModal';
+import {EvStation} from '../api/client';
+import EvStationCard from './EvStationCard';
+import EvStationDetailModal from './EvStationDetailModal';
 
 type Props = {
-  stations: GasStation[];
-  primaryFuelKey?: FuelKey;
-  secondaryFuelKey?: FuelKey;
+  stations: EvStation[];
   loading: boolean;
   error: string | null;
   onLoadMore?: () => void;
@@ -57,10 +54,8 @@ function ListFooter({
   return null;
 }
 
-function StationList({
+function EvStationList({
   stations,
-  primaryFuelKey,
-  secondaryFuelKey,
   loading,
   error,
   onLoadMore,
@@ -68,22 +63,17 @@ function StationList({
   loadingMore = false,
   refreshing = false,
   onRefresh,
-  emptyMessage = 'No stations found nearby.',
+  emptyMessage = 'No EV chargers found nearby.',
 }: Props): React.JSX.Element {
-  const [selectedStation, setSelectedStation] = useState<GasStation | null>(
+  const [selectedStation, setSelectedStation] = useState<EvStation | null>(
     null,
   );
 
   const renderStation = useCallback(
-    ({item}: {item: GasStation}) => (
-      <StationCard
-        station={item}
-        primaryFuelKey={primaryFuelKey}
-        secondaryFuelKey={secondaryFuelKey}
-        onPress={() => setSelectedStation(item)}
-      />
+    ({item}: {item: EvStation}) => (
+      <EvStationCard station={item} onPress={() => setSelectedStation(item)} />
     ),
-    [primaryFuelKey, secondaryFuelKey],
+    [],
   );
 
   if (loading) {
@@ -111,7 +101,7 @@ function StationList({
           <RefreshControl
             refreshing={refreshing}
             onRefresh={onRefresh}
-            tintColor="#1565c0"
+            tintColor="#2e7d32"
           />
         }
         ListFooterComponent={
@@ -122,7 +112,7 @@ function StationList({
           />
         }
       />
-      <StationDetailModal
+      <EvStationDetailModal
         station={selectedStation}
         onClose={() => setSelectedStation(null)}
       />
@@ -167,4 +157,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export default StationList;
+export default EvStationList;

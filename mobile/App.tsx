@@ -7,6 +7,10 @@ import {
 } from 'react-native';
 
 import BottomNavBar, {TabKey} from './src/navigation/BottomNavBar';
+import EvScreen, {
+  INITIAL_PERSISTED_EV_SEARCH,
+  PersistedEvSearch,
+} from './src/screens/EvScreen';
 import FavoritesScreen from './src/screens/FavoritesScreen';
 import HomeScreen, {
   INITIAL_PERSISTED_SEARCH,
@@ -17,10 +21,9 @@ import SplashScreen from './src/screens/SplashScreen';
 import {FavoritesProvider, useFavorites} from './src/store/FavoritesContext';
 
 const PLACEHOLDER_TITLES: Record<
-  Exclude<TabKey, 'home' | 'favorites'>,
+  Exclude<TabKey, 'home' | 'favorites' | 'search'>,
   string
 > = {
-  search: 'Search',
   chat: 'Chat',
   personal: 'Personal',
 };
@@ -29,16 +32,28 @@ function ActiveScreen({
   activeTab,
   persistedSearch,
   onSearchComplete,
+  persistedEvSearch,
+  onEvSearchComplete,
 }: {
   activeTab: TabKey;
   persistedSearch: PersistedSearch;
   onSearchComplete: (search: PersistedSearch) => void;
+  persistedEvSearch: PersistedEvSearch;
+  onEvSearchComplete: (search: PersistedEvSearch) => void;
 }): React.JSX.Element {
   if (activeTab === 'home') {
     return (
       <HomeScreen
         persistedSearch={persistedSearch}
         onSearchComplete={onSearchComplete}
+      />
+    );
+  }
+  if (activeTab === 'search') {
+    return (
+      <EvScreen
+        persistedSearch={persistedEvSearch}
+        onSearchComplete={onEvSearchComplete}
       />
     );
   }
@@ -51,11 +66,15 @@ function ActiveScreen({
 function AppContent(): React.JSX.Element {
   const {isReady} = useFavorites();
   const [activeTab, setActiveTab] = useState<TabKey>('home');
-  // Lifted above HomeScreen so it survives HomeScreen unmounting when the
-  // user switches to another tab and back — see the PersistedSearch doc
-  // comment in HomeScreen.tsx for what's deliberately left out (pagination).
+  // Lifted above HomeScreen/EvScreen so each survives its screen unmounting
+  // when the user switches to another tab and back — see the
+  // PersistedSearch doc comment in HomeScreen.tsx for what's deliberately
+  // left out (pagination).
   const [persistedSearch, setPersistedSearch] = useState<PersistedSearch>(
     INITIAL_PERSISTED_SEARCH,
+  );
+  const [persistedEvSearch, setPersistedEvSearch] = useState<PersistedEvSearch>(
+    INITIAL_PERSISTED_EV_SEARCH,
   );
 
   if (!isReady) {
@@ -68,6 +87,8 @@ function AppContent(): React.JSX.Element {
         activeTab={activeTab}
         persistedSearch={persistedSearch}
         onSearchComplete={setPersistedSearch}
+        persistedEvSearch={persistedEvSearch}
+        onEvSearchComplete={setPersistedEvSearch}
       />
 
       <BottomNavBar activeTab={activeTab} onTabPress={setActiveTab} />

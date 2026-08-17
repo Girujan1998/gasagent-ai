@@ -2,6 +2,13 @@ import React, {useState} from 'react';
 import {Image, StyleSheet, Text, TouchableOpacity, View} from 'react-native';
 
 import {FuelPrice, GasStation} from '../api/client';
+import {
+  DEFAULT_PRIMARY_FUEL_KEY,
+  DEFAULT_SECONDARY_FUEL_KEY,
+  FUEL_LABELS,
+  FuelKey,
+  fuelByKey,
+} from '../config/fuelDisplay';
 import {useFavorites} from '../store/FavoritesContext';
 import {milesToKm} from '../utils/distance';
 import {freshnessColor} from '../utils/freshness';
@@ -9,6 +16,8 @@ import {minutesSince, timeAgo} from '../utils/time';
 
 type Props = {
   station: GasStation;
+  primaryFuelKey?: FuelKey;
+  secondaryFuelKey?: FuelKey;
   onPress?: () => void;
 };
 
@@ -68,7 +77,12 @@ function PriceColumn({
   );
 }
 
-function StationCard({station, onPress}: Props): React.JSX.Element {
+function StationCard({
+  station,
+  primaryFuelKey = DEFAULT_PRIMARY_FUEL_KEY,
+  secondaryFuelKey = DEFAULT_SECONDARY_FUEL_KEY,
+  onPress,
+}: Props): React.JSX.Element {
   const {isFavorite, toggleFavorite} = useFavorites();
   const favorited = isFavorite(station.station_id);
 
@@ -129,8 +143,14 @@ function StationCard({station, onPress}: Props): React.JSX.Element {
       )}
 
       <View style={styles.pricesRow}>
-        <PriceColumn label="Regular" fuel={station.regular} />
-        <PriceColumn label="Premium" fuel={station.premium} />
+        <PriceColumn
+          label={FUEL_LABELS[primaryFuelKey]}
+          fuel={fuelByKey(station, primaryFuelKey)}
+        />
+        <PriceColumn
+          label={FUEL_LABELS[secondaryFuelKey]}
+          fuel={fuelByKey(station, secondaryFuelKey)}
+        />
       </View>
 
       {station.star_rating != null && (

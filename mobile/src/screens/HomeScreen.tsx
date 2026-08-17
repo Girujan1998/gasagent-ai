@@ -1,4 +1,4 @@
-import React, {useEffect, useRef, useState} from 'react';
+import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {ActivityIndicator, StyleSheet, Text, View} from 'react-native';
 
 import {
@@ -7,10 +7,41 @@ import {
   HealthResponse,
   searchNearestStations,
 } from '../api/client';
-import StationList from '../components/StationList';
 import LocationSearchBar, {
   LocationQuery,
 } from '../components/LocationSearchBar';
+import FilterControl from '../components/FilterControl';
+import SortControl from '../components/SortControl';
+import StationList from '../components/StationList';
+import StationMap from '../components/StationMap';
+import ViewModeToggle, {ViewMode} from '../components/ViewModeToggle';
+import {
+  DEFAULT_PRIMARY_FUEL_KEY,
+  DEFAULT_SECONDARY_FUEL_KEY,
+  FUEL_LABELS,
+  FuelKey,
+} from '../config/fuelDisplay';
+import {
+  brandOptionsFromStations,
+  filterStationsByBrands,
+} from '../utils/brandFilter';
+import {sortStations, SortOption} from '../utils/sortStations';
+
+// Pagination is manual (a "Load More" button, not infinite scroll) and
+// capped: once this many stations have been fetched, unfiltered, from the
+// API, we stop calling it and hide the button — regardless of how many
+// stations still match an active brand filter. A filter only narrows what
+// is displayed from that fixed pool, it never triggers more fetching.
+const MAX_TOTAL_STATIONS = 40;
+// 20 is the API's maximum `limit` per request (see stations.py).
+const STATIONS_PER_PAGE = 20;
+// Map view has no "Load More" of its own — it always shows just the first
+// page of whatever's been fetched, even if List view's Load More has since
+// grown `stations` past this.
+const MAX_MAP_STATIONS = 20;
+
+const NO_MATCHING_BRANDS_MESSAGE =
+  'No stations match the selected brand filters.';
 
 // The part of a search worth surviving a tab switch: the location searched
 // and its first page of results. Deliberately excludes anything loaded via
@@ -51,19 +82,80 @@ function HomeScreen({
   );
   const [hasSearched, setHasSearched] = useState(persistedSearch.hasSearched);
   const [searching, setSearching] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(
     persistedSearch.error,
   );
   const [loadingMore, setLoadingMore] = useState(false);
+  // Not persisted across tab switches — same treatment as pagination
+  // below, a view preference rather than search result data.
+  const [sortBy, setSortBy] = useState<SortOption>('distance');
+  const [viewMode, setViewMode] = useState<ViewMode>('list');
+  const [primaryFuelKey, setPrimaryFuelKey] = useState<FuelKey>(
+    DEFAULT_PRIMARY_FUEL_KEY,
+  );
+  const [secondaryFuelKey, setSecondaryFuelKey] = useState<FuelKey>(
+    DEFAULT_SECONDARY_FUEL_KEY,
+  );
+  // null = no brand filter applied (show everything, including brands
+  // discovered later via "load more"); a Set is a strict allowlist.
+  const [selectedBrandKeys, setSelectedBrandKeys] =
+    useState<Set<string> | null>(null);
+
+  const brandOptions = useMemo(
+    () => brandOptionsFromStations(stations),
+    [stations],
+  );
+  const filteredStations = useMemo(
+    () => filterStationsByBrands(stations, selectedBrandKeys),
+    [stations, selectedBrandKeys],
+  );
+  const sortedStations = useMemo(
+    () =>
+      sortStations(filteredStations, sortBy, primaryFuelKey, secondaryFuelKey),
+    [filteredStations, sortBy, primaryFuelKey, secondaryFuelKey],
+  );
+  const emptyMessage =
+    stations.length > 0 && filteredStations.length === 0
+      ? NO_MATCHING_BRANDS_MESSAGE
+      : undefined;
+
+  // Map view's own pool — capped independently of List view's Load More,
+  // then filtered the same way.
+  const mapStations = useMemo(
+    () =>
+      filterStationsByBrands(
+        stations.slice(0, MAX_MAP_STATIONS),
+        selectedBrandKeys,
+      ),
+    [stations, selectedBrandKeys],
+  );
+  const mapEmptyMessage =
+    stations.length > 0 && mapStations.length === 0
+      ? NO_MATCHING_BRANDS_MESSAGE
+      : undefined;
 
   // The coordinates + cursor a "load more" page continues from. Refs (not
-  // state) because handleLoadMore reads the latest value synchronously from
-  // FlatList's onEndReached callback, without waiting on a re-render.
+  // state) because handleLoadMore reads the latest value synchronously,
+  // without waiting on a re-render.
   const searchLocationRef = useRef<{lat: number; lon: number} | null>(
     persistedSearch.searchLocation,
   );
   const nextCursorRef = useRef<string | null>(persistedSearch.nextCursor);
   const loadingMoreRef = useRef(false);
+  // What "refresh" re-runs. A ref (not the persistedSearch prop) so it
+  // stays this component's own live source of truth, the same way the
+  // refs above do — persistedSearch is for surviving a tab switch, not
+  // for driving behavior within a single mount.
+  const lastQueryRef = useRef<LocationQuery | null>(persistedSearch.query);
+
+  // Load More is available whenever there's a fetched-but-unshown page to
+  // get (a cursor from the API) and we're still under the overall cap —
+  // never based on how many stations currently pass the brand filter.
+  const canLoadMore =
+    stations.length > 0 &&
+    stations.length < MAX_TOTAL_STATIONS &&
+    nextCursorRef.current !== null;
 
   useEffect(() => {
     getHealth()
@@ -71,19 +163,33 @@ function HomeScreen({
       .catch(err => setHealthError(err.message));
   }, []);
 
-  const handleLocationSearch = async (locationQuery: LocationQuery) => {
-    setHasSearched(true);
-    setSearching(true);
+  // Shared by a fresh search (typing a location, "Search this area", the
+  // current-location pin) and a pull-to-refresh of the current one. They
+  // differ only in which loading flag they drive and what happens on
+  // failure: a fresh search clears the screen down to the error, but a
+  // refresh leaves whatever was already showing in place rather than
+  // wiping out good results just because one refresh attempt failed.
+  const runSearch = async (
+    locationQuery: LocationQuery,
+    isRefresh: boolean,
+  ) => {
+    if (isRefresh) {
+      setRefreshing(true);
+    } else {
+      setHasSearched(true);
+      setSearching(true);
+      nextCursorRef.current = null;
+      searchLocationRef.current = null;
+      lastQueryRef.current = locationQuery;
+    }
     setSearchError(null);
-    nextCursorRef.current = null;
-    searchLocationRef.current = null;
 
     try {
       const params =
         locationQuery.type === 'text'
           ? {query: locationQuery.value}
           : {lat: locationQuery.latitude, lon: locationQuery.longitude};
-      const response = await searchNearestStations(params, 10);
+      const response = await searchNearestStations(params, STATIONS_PER_PAGE);
       const searchLocation = {lat: response.lat, lon: response.lon};
       setStations(response.results);
       nextCursorRef.current = response.next_cursor;
@@ -97,36 +203,71 @@ function HomeScreen({
         error: null,
       });
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Search failed.';
-      setStations([]);
-      setSearchError(message);
-      onSearchComplete({
-        hasSearched: true,
-        query: locationQuery,
-        stations: [],
-        nextCursor: null,
-        searchLocation: null,
-        error: message,
-      });
+      // A failed refresh deliberately leaves the error state alone too —
+      // the existing (still valid) results stay on screen, uninterrupted,
+      // rather than getting replaced by an error page over one failed
+      // pull-to-refresh.
+      if (!isRefresh) {
+        const message = err instanceof Error ? err.message : 'Search failed.';
+        setSearchError(message);
+        setStations([]);
+        onSearchComplete({
+          hasSearched: true,
+          query: locationQuery,
+          stations: [],
+          nextCursor: null,
+          searchLocation: null,
+          error: message,
+        });
+      }
     } finally {
-      setSearching(false);
+      if (isRefresh) {
+        setRefreshing(false);
+      } else {
+        setSearching(false);
+      }
     }
   };
 
+  const handleLocationSearch = (locationQuery: LocationQuery) =>
+    runSearch(locationQuery, false);
+
+  // Only offered once there's a location to refresh — the pull gesture
+  // itself only exists once StationList's FlatList is on screen, which
+  // requires a completed search already.
+  const handleRefresh = () => {
+    if (lastQueryRef.current) {
+      runSearch(lastQueryRef.current, true);
+    }
+  };
+
+  // Only ever called from the "Load More" button — there is no automatic/
+  // scroll-triggered pagination, and a brand filter never causes this to
+  // fire on its own even if the filtered list is short.
   const handleLoadMore = async () => {
     const location = searchLocationRef.current;
     const cursor = nextCursorRef.current;
-    if (!location || !cursor || loadingMoreRef.current) {
+    if (
+      !location ||
+      !cursor ||
+      loadingMoreRef.current ||
+      stations.length >= MAX_TOTAL_STATIONS
+    ) {
       return;
     }
+
+    const remaining = MAX_TOTAL_STATIONS - stations.length;
+    const pageSize = Math.min(STATIONS_PER_PAGE, remaining);
 
     // Deliberately not persisted via onSearchComplete — pagination is
     // local-only and resets the next time this screen mounts.
     loadingMoreRef.current = true;
     setLoadingMore(true);
     try {
-      const response = await searchNearestStations(location, 10, cursor);
-      setStations(prev => [...prev, ...response.results]);
+      const response = await searchNearestStations(location, pageSize, cursor);
+      if (response.results.length > 0) {
+        setStations(prev => [...prev, ...response.results]);
+      }
       nextCursorRef.current = response.next_cursor;
     } catch {
       // Keep the results already on screen; just stop trying to paginate.
@@ -145,19 +286,74 @@ function HomeScreen({
       />
 
       {hasSearched ? (
-        <StationList
-          stations={stations}
-          loading={searching}
-          error={searchError}
-          onEndReached={handleLoadMore}
-          loadingMore={loadingMore}
-        />
+        <>
+          {stations.length > 0 && (
+            <View style={styles.controlsRow}>
+              <View style={styles.leftControls}>
+                <SortControl
+                  value={sortBy}
+                  onChange={setSortBy}
+                  primaryFuelLabel={FUEL_LABELS[primaryFuelKey]}
+                  secondaryFuelLabel={FUEL_LABELS[secondaryFuelKey]}
+                />
+                <ViewModeToggle value={viewMode} onChange={setViewMode} />
+              </View>
+              <FilterControl
+                primaryFuelKey={primaryFuelKey}
+                secondaryFuelKey={secondaryFuelKey}
+                onChangePrimaryFuelKey={setPrimaryFuelKey}
+                onChangeSecondaryFuelKey={setSecondaryFuelKey}
+                brandOptions={brandOptions}
+                selectedBrandKeys={selectedBrandKeys}
+                onApplyBrandFilters={setSelectedBrandKeys}
+              />
+            </View>
+          )}
+          {viewMode === 'list' ? (
+            <StationList
+              stations={sortedStations}
+              primaryFuelKey={primaryFuelKey}
+              secondaryFuelKey={secondaryFuelKey}
+              loading={searching}
+              error={searchError}
+              onLoadMore={handleLoadMore}
+              canLoadMore={canLoadMore}
+              loadingMore={loadingMore}
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              emptyMessage={emptyMessage}
+            />
+          ) : (
+            // Panning, zooming, and tapping a pin never trigger a fetch —
+            // the map only ever displays its own fixed pool of
+            // already-fetched stations (see MAX_MAP_STATIONS above). The
+            // one deliberate exception is "Search this area" itself, which
+            // runs a brand new search exactly like typing a location and
+            // pressing Search.
+            <StationMap
+              stations={mapStations}
+              primaryFuelKey={primaryFuelKey}
+              secondaryFuelKey={secondaryFuelKey}
+              center={searchLocationRef.current}
+              loading={searching}
+              error={searchError}
+              onSearchArea={areaCenter =>
+                handleLocationSearch({
+                  type: 'coordinates',
+                  latitude: areaCenter.lat,
+                  longitude: areaCenter.lon,
+                })
+              }
+              emptyMessage={mapEmptyMessage}
+            />
+          )}
+        </>
       ) : (
         <View style={styles.intro}>
           <Text style={styles.title}>GasAgent.ai</Text>
           <Text style={styles.subtitle}>
             Search a city, postal code, or use your current location to find the
-            10 nearest gas stations.
+            20 nearest gas stations.
           </Text>
 
           {!health && !healthError && (
@@ -186,6 +382,24 @@ function HomeScreen({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  controlsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    marginTop: 10,
+  },
+  leftControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    // Lets SortControl's trigger truncate instead of pushing FilterControl
+    // (which must stay flexShrink: 0, i.e. RN's own default) off-screen —
+    // minWidth: 0 is required for that shrinking to actually kick in, since
+    // Yoga otherwise floors a flex item's width at its content size.
+    flexShrink: 1,
+    minWidth: 0,
   },
   intro: {
     flex: 1,

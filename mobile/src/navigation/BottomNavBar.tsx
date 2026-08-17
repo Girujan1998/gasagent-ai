@@ -3,15 +3,40 @@ import {StyleSheet, Text, TouchableOpacity, View} from 'react-native';
 
 export type TabKey = 'home' | 'search' | 'chat' | 'favorites' | 'personal';
 
+// Most tabs use a plain emoji glyph; a tab can instead provide a custom
+// icon (built from Views, like the filter button's sliders icon) when no
+// emoji reads as the right shape — an EV charging station, here.
 type TabConfig = {
   key: TabKey;
   label: string;
-  icon: string;
+  icon: string | ((active: boolean) => React.JSX.Element);
 };
 
+// A charging-station silhouette (body + display + bolt + plug) built from
+// Views — no single emoji reads as "EV charger", so this mirrors the
+// filter button's icon, which is built the same way for the same reason.
+function EVChargerIcon({active}: {active: boolean}): React.JSX.Element {
+  return (
+    <View
+      style={[styles.evIconWrap, active && styles.iconActive]}
+      testID="ev-charger-icon">
+      <View style={styles.evBody}>
+        <View style={styles.evScreen} />
+        <Text style={styles.evBolt}>⚡</Text>
+      </View>
+      <View style={styles.evPlugCord} />
+      <View style={styles.evPlugHead} />
+    </View>
+  );
+}
+
 const LEFT_TABS: TabConfig[] = [
-  {key: 'home', label: 'Home', icon: '🏠'},
-  {key: 'search', label: 'Search', icon: '🔍'},
+  {key: 'home', label: 'Gas', icon: '⛽'},
+  {
+    key: 'search',
+    label: 'EV',
+    icon: active => <EVChargerIcon active={active} />,
+  },
 ];
 
 const RIGHT_TABS: TabConfig[] = [
@@ -19,7 +44,13 @@ const RIGHT_TABS: TabConfig[] = [
   {key: 'personal', label: 'Personal', icon: '👤'},
 ];
 
-const CENTER_TAB: TabConfig = {key: 'chat', label: 'Chat', icon: '💬'};
+// Always a plain emoji, unlike TabConfig — the raised center button never
+// needs a custom icon, so this stays simpler than accommodating one.
+const CENTER_TAB: {key: TabKey; label: string; icon: string} = {
+  key: 'chat',
+  label: 'Chat',
+  icon: '💬',
+};
 
 const CENTER_BUTTON_SIZE = 56;
 
@@ -43,7 +74,13 @@ function TabButton({
       activeOpacity={0.6}
       onPress={() => onPress(tab.key)}
       accessibilityLabel={tab.label}>
-      <Text style={[styles.icon, active && styles.iconActive]}>{tab.icon}</Text>
+      {typeof tab.icon === 'string' ? (
+        <Text style={[styles.icon, active && styles.iconActive]}>
+          {tab.icon}
+        </Text>
+      ) : (
+        tab.icon(active)
+      )}
       <Text style={[styles.label, active && styles.labelActive]}>
         {tab.label}
       </Text>
@@ -131,6 +168,52 @@ const styles = StyleSheet.create({
   },
   iconActive: {
     opacity: 1,
+  },
+  evIconWrap: {
+    width: 20,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    opacity: 0.5,
+  },
+  evBody: {
+    width: 12,
+    height: 17,
+    borderWidth: 1.4,
+    borderColor: '#333',
+    borderRadius: 3,
+    alignItems: 'center',
+    paddingTop: 2,
+  },
+  evScreen: {
+    width: 6,
+    height: 3.5,
+    borderWidth: 1,
+    borderColor: '#333',
+    borderRadius: 1,
+  },
+  evBolt: {
+    fontSize: 7,
+    lineHeight: 8,
+    marginTop: 1,
+  },
+  evPlugCord: {
+    position: 'absolute',
+    right: 1,
+    top: 9,
+    width: 4,
+    height: 1.3,
+    backgroundColor: '#333',
+    borderRadius: 1,
+  },
+  evPlugHead: {
+    position: 'absolute',
+    right: -2,
+    top: 6.5,
+    width: 3.5,
+    height: 6,
+    backgroundColor: '#333',
+    borderRadius: 1,
   },
   label: {
     marginTop: 2,

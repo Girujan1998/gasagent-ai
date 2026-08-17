@@ -5,11 +5,40 @@
 import React from 'react';
 import {TextInput} from 'react-native';
 import {act, create, ReactTestRenderer} from 'react-test-renderer';
-import {it, expect, jest} from '@jest/globals';
+import {it, expect, jest, beforeEach, afterEach} from '@jest/globals';
 
 import LocationSearchBar, {
   LocationQuery,
 } from '../src/components/LocationSearchBar';
+
+type FetchResult = {ok: boolean; json: () => Promise<unknown>};
+type FetchFn = (...args: unknown[]) => Promise<FetchResult>;
+
+function getFetchMock(): jest.Mock<FetchFn> {
+  return global.fetch as unknown as jest.Mock<FetchFn>;
+}
+
+// The debounce is 300ms — waiting this out inside act() lets any pending
+// timer fire (and its fetch settle) before the test ends, so nothing is
+// left running to trip up a later test.
+async function flushDebounce() {
+  await act(async () => {
+    await new Promise(resolve => setTimeout(resolve, 350));
+  });
+}
+
+beforeEach(() => {
+  global.fetch = jest.fn(() =>
+    Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({results: []}),
+    }),
+  ) as unknown as typeof fetch;
+});
+
+afterEach(() => {
+  jest.restoreAllMocks();
+});
 
 it('submits a typed city/postal code search', async () => {
   const onSearch = jest.fn<(query: LocationQuery) => void>();
@@ -22,6 +51,7 @@ it('submits a typed city/postal code search', async () => {
   await act(async () => {
     input.props.onChangeText('90210');
   });
+  await flushDebounce();
 
   const searchButton = renderer!.root.findByProps({
     accessibilityLabel: 'Search',
@@ -40,6 +70,7 @@ it('restores a persisted text query on mount and can clear it', async () => {
       <LocationSearchBar initialQuery={{type: 'text', value: '60614'}} />,
     );
   });
+  await flushDebounce();
 
   expect(renderer!.root.findByType(TextInput).props.value).toBe('60614');
 
@@ -53,6 +84,40 @@ it('restores a persisted text query on mount and can clear it', async () => {
   expect(renderer!.root.findByType(TextInput).props.value).toBe('');
   expect(() =>
     renderer!.root.findByProps({accessibilityLabel: 'Clear search'}),
+  ).toThrow();
+});
+
+it('does not show the autocomplete dropdown just from restoring a persisted query on mount', async () => {
+  // Simulates leaving the Home tab and coming back: this component
+  // remounts with a non-empty initialQuery from a previous search, but
+  // the user hasn't typed or focused anything this time.
+  const fetchMock = getFetchMock();
+  fetchMock.mockResolvedValue({
+    ok: true,
+    json: () =>
+      Promise.resolve({
+        results: [
+          {
+            label: 'Cambridge, Ontario, Canada',
+            value: 'Cambridge, Ontario, Canada',
+          },
+        ],
+      }),
+  });
+
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      <LocationSearchBar initialQuery={{type: 'text', value: 'Cambridge'}} />,
+    );
+  });
+  await flushDebounce();
+
+  expect(fetchMock).not.toHaveBeenCalled();
+  expect(() =>
+    renderer!.root.findByProps({
+      accessibilityLabel: 'Search Cambridge, Ontario, Canada',
+    }),
   ).toThrow();
 });
 
@@ -79,5 +144,175 @@ it('does not show the clear button when there is nothing to clear', async () => 
 
   expect(() =>
     renderer!.root.findByProps({accessibilityLabel: 'Clear search'}),
+  ).toThrow();
+});
+
+it('fetches suggestions once 3 characters have been entered, after a debounce', async () => {
+  const fetchMock = getFetchMock();
+  fetchMock.mockResolvedValue({
+    ok: true,
+    json: () =>
+      Promise.resolve({
+        results: [
+          {
+            label: 'Cambridge, Ontario, Canada',
+            value: 'Cambridge, Ontario, Canada',
+          },
+        ],
+      }),
+  });
+
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(<LocationSearchBar />);
+  });
+
+  const input = renderer!.root.findByType(TextInput);
+
+  // Below the 3-character threshold: no request at all.
+  await act(async () => {
+    input.props.onChangeText('Ca');
+  });
+  await flushDebounce();
+  expect(fetchMock).not.toHaveBeenCalled();
+
+  await act(async () => {
+    input.props.onChangeText('Cam');
+  });
+  await flushDebounce();
+
+  expect(fetchMock).toHaveBeenCalledWith(
+    expect.stringContaining('/locations/autocomplete?query=Cam'),
+    expect.anything(),
+  );
+  expect(
+    renderer!.root.findByProps({
+      accessibilityLabel: 'Search Cambridge, Ontario, Canada',
+    }),
+  ).toBeTruthy();
+});
+
+it('selects a suggestion by filling the input and searching immediately', async () => {
+  const fetchMock = getFetchMock();
+  fetchMock.mockResolvedValue({
+    ok: true,
+    json: () =>
+      Promise.resolve({
+        results: [{label: 'N1T · Cambridge East, ON', value: 'N1T'}],
+      }),
+  });
+  const onSearch = jest.fn<(query: LocationQuery) => void>();
+
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(<LocationSearchBar onSearch={onSearch} />);
+  });
+
+  const input = renderer!.root.findByType(TextInput);
+  await act(async () => {
+    input.props.onChangeText('N1T');
+  });
+  await flushDebounce();
+
+  const suggestionRow = renderer!.root.findByProps({
+    accessibilityLabel: 'Search N1T · Cambridge East, ON',
+  });
+  await act(async () => {
+    suggestionRow.props.onPress();
+  });
+
+  expect(onSearch).toHaveBeenCalledWith({type: 'text', value: 'N1T'});
+  expect(renderer!.root.findByType(TextInput).props.value).toBe('N1T');
+  expect(() =>
+    renderer!.root.findByProps({
+      accessibilityLabel: 'Search N1T · Cambridge East, ON',
+    }),
+  ).toThrow();
+});
+
+it('hides the suggestions dropdown after clearing the search', async () => {
+  const fetchMock = getFetchMock();
+  fetchMock.mockResolvedValue({
+    ok: true,
+    json: () =>
+      Promise.resolve({
+        results: [
+          {label: 'Chicago, Illinois, United States', value: 'Chicago'},
+        ],
+      }),
+  });
+
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(<LocationSearchBar />);
+  });
+
+  const input = renderer!.root.findByType(TextInput);
+  await act(async () => {
+    input.props.onChangeText('Chi');
+  });
+  await flushDebounce();
+
+  expect(
+    renderer!.root.findByProps({
+      accessibilityLabel: 'Search Chicago, Illinois, United States',
+    }),
+  ).toBeTruthy();
+
+  await act(async () => {
+    renderer!.root
+      .findByProps({accessibilityLabel: 'Clear search'})
+      .props.onPress();
+  });
+
+  expect(() =>
+    renderer!.root.findByProps({
+      accessibilityLabel: 'Search Chicago, Illinois, United States',
+    }),
+  ).toThrow();
+});
+
+it('does not let a stale autocomplete response reopen the dropdown after a manual search', async () => {
+  const fetchMock = getFetchMock();
+  fetchMock.mockResolvedValue({
+    ok: true,
+    json: () =>
+      Promise.resolve({
+        results: [
+          {
+            label: 'Cambridge, Ontario, Canada',
+            value: 'Cambridge, Ontario, Canada',
+          },
+        ],
+      }),
+  });
+  const onSearch = jest.fn<(query: LocationQuery) => void>();
+
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(<LocationSearchBar onSearch={onSearch} />);
+  });
+
+  const input = renderer!.root.findByType(TextInput);
+  await act(async () => {
+    input.props.onChangeText('Cambridge');
+  });
+
+  // Search right away — the debounced autocomplete fetch scheduled by the
+  // typing above is still pending, not yet resolved.
+  await act(async () => {
+    renderer!.root.findByProps({accessibilityLabel: 'Search'}).props.onPress();
+  });
+
+  expect(onSearch).toHaveBeenCalledWith({type: 'text', value: 'Cambridge'});
+
+  // Wait out the debounce window that pending request was scheduled on —
+  // it must not repopulate the dropdown once it resolves.
+  await flushDebounce();
+
+  expect(() =>
+    renderer!.root.findByProps({
+      accessibilityLabel: 'Search Cambridge, Ontario, Canada',
+    }),
   ).toThrow();
 });

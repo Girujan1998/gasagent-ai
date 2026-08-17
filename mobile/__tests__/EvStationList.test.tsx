@@ -7,44 +7,39 @@ import {ActivityIndicator, FlatList, Linking, Modal, Text} from 'react-native';
 import {act, create, ReactTestRenderer} from 'react-test-renderer';
 import {it, expect, jest} from '@jest/globals';
 
-import {GasStation} from '../src/api/client';
-import StationList from '../src/components/StationList';
-import {FavoritesProvider} from '../src/store/FavoritesContext';
+import {EvStation} from '../src/api/client';
+import EvStationList from '../src/components/EvStationList';
 
-const station: GasStation = {
+const station: EvStation = {
   station_id: 'abc',
-  name: 'Test Station',
-  brand: 'Shell',
-  brand_logo_url: null,
-  connected_brand: 'Circle K',
-  connected_brand_logo_url: null,
+  name: 'Downtown Charging Hub',
+  network: 'ChargePoint Network',
+  network_web: 'https://www.chargepoint.com',
   address: '1 Main St, Springfield, IL',
   latitude: 41.9,
   longitude: -87.6,
   distance_miles: 1.5,
-  regular: {price: 3.19, formatted_price: '$3.19', last_updated: null},
-  midgrade: {price: 3.49, formatted_price: '$3.49', last_updated: null},
-  premium: {price: 3.79, formatted_price: '$3.79', last_updated: null},
-  diesel: {price: 3.99, formatted_price: '$3.99', last_updated: null},
-  star_rating: 4.5,
-  ratings_count: 120,
-  amenities: ['Car Wash', 'Restrooms'],
+  phone: '888-758-4389',
+  access_hours: '24 hours daily',
+  access_code: 'public',
+  status_code: 'E',
+  level1_count: null,
+  level2_count: 2,
+  dc_fast_count: 1,
+  connector_types: ['J1772', 'J1772COMBO'],
+  date_last_confirmed: '2026-08-16T00:00:00.000Z',
 };
 
 it('opens a detail modal on tap, and closes it via the close button', async () => {
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <FavoritesProvider>
-        <StationList stations={[station]} loading={false} error={null} />
-      </FavoritesProvider>,
+      <EvStationList stations={[station]} loading={false} error={null} />,
     );
   });
 
   expect(renderer!.root.findByType(Modal).props.visible).toBe(false);
 
-  // Each Text node's children joined into one string (a Text like
-  // `{value} km` renders as two separate children, not one string).
   const joinedTexts = () =>
     renderer!.root.findAllByType(Text).map(node =>
       ([] as unknown[])
@@ -56,28 +51,22 @@ it('opens a detail modal on tap, and closes it via the close button', async () =
   // The card itself (before opening anything) shows distance in
   // kilometers, not miles — 1.5 miles.
   expect(joinedTexts()).toContain('2.4 km');
-  // The connected brand shows as secondary text, not as the primary name.
-  expect(joinedTexts()).toContain('with Circle K');
+  expect(joinedTexts()).toContain('ChargePoint Network');
 
   await act(async () => {
     renderer!.root
-      .findByProps({accessibilityLabel: 'View details for Shell'})
+      .findByProps({
+        accessibilityLabel: 'View details for Downtown Charging Hub',
+      })
       .props.onPress();
   });
 
   expect(renderer!.root.findByType(Modal).props.visible).toBe(true);
   const textNodes = joinedTexts();
 
-  // All four fuel prices should be present in the expanded view.
-  expect(textNodes).toEqual(
-    expect.arrayContaining(['$3.19', '$3.49', '$3.79', '$3.99']),
-  );
-  // The modal also shows kilometers, not miles.
   expect(textNodes).toContain('2.4 km away');
-  // ...and the connected brand too.
-  expect(textNodes).toContain('with Circle K');
-  // ...and the station's amenities.
-  expect(textNodes).toEqual(expect.arrayContaining(['Car Wash', 'Restrooms']));
+  expect(textNodes).toContain('CCS');
+  expect(textNodes).toEqual(expect.arrayContaining(['J1772', 'CCS']));
 
   await act(async () => {
     renderer!.root.findByProps({accessibilityLabel: 'Close'}).props.onPress();
@@ -86,30 +75,30 @@ it('opens a detail modal on tap, and closes it via the close button', async () =
   expect(renderer!.root.findByType(Modal).props.visible).toBe(false);
 });
 
-it('hides the amenities section for a station with none reported', async () => {
-  const stationWithNoAmenities: GasStation = {...station, amenities: []};
+it('hides the connector chips section for a station with none reported', async () => {
+  const stationWithNoConnectors: EvStation = {...station, connector_types: []};
 
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <FavoritesProvider>
-        <StationList
-          stations={[stationWithNoAmenities]}
-          loading={false}
-          error={null}
-        />
-      </FavoritesProvider>,
+      <EvStationList
+        stations={[stationWithNoConnectors]}
+        loading={false}
+        error={null}
+      />,
     );
   });
 
   await act(async () => {
     renderer!.root
-      .findByProps({accessibilityLabel: 'View details for Shell'})
+      .findByProps({
+        accessibilityLabel: 'View details for Downtown Charging Hub',
+      })
       .props.onPress();
   });
 
   expect(
-    renderer!.root.findAllByProps({children: 'Features & Amenities'}),
+    renderer!.root.findAllByProps({children: 'Connector Types'}),
   ).toHaveLength(0);
 });
 
@@ -121,15 +110,15 @@ it('opens the device maps app with the station location when Navigate is pressed
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <FavoritesProvider>
-        <StationList stations={[station]} loading={false} error={null} />
-      </FavoritesProvider>,
+      <EvStationList stations={[station]} loading={false} error={null} />,
     );
   });
 
   await act(async () => {
     renderer!.root
-      .findByProps({accessibilityLabel: 'View details for Shell'})
+      .findByProps({
+        accessibilityLabel: 'View details for Downtown Charging Hub',
+      })
       .props.onPress();
   });
   await act(async () => {
@@ -152,15 +141,13 @@ it('shows a Load More button when canLoadMore is true, and calls onLoadMore when
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <FavoritesProvider>
-        <StationList
-          stations={[station]}
-          loading={false}
-          error={null}
-          canLoadMore
-          onLoadMore={onLoadMore}
-        />
-      </FavoritesProvider>,
+      <EvStationList
+        stations={[station]}
+        loading={false}
+        error={null}
+        canLoadMore
+        onLoadMore={onLoadMore}
+      />,
     );
   });
 
@@ -177,15 +164,13 @@ it('shows a spinner instead of the Load More button while loadingMore is true', 
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <FavoritesProvider>
-        <StationList
-          stations={[station]}
-          loading={false}
-          error={null}
-          canLoadMore
-          loadingMore
-        />
-      </FavoritesProvider>,
+      <EvStationList
+        stations={[station]}
+        loading={false}
+        error={null}
+        canLoadMore
+        loadingMore
+      />,
     );
   });
 
@@ -199,14 +184,12 @@ it('hides the Load More button when canLoadMore is false', async () => {
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <FavoritesProvider>
-        <StationList
-          stations={[station]}
-          loading={false}
-          error={null}
-          canLoadMore={false}
-        />
-      </FavoritesProvider>,
+      <EvStationList
+        stations={[station]}
+        loading={false}
+        error={null}
+        canLoadMore={false}
+      />,
     );
   });
 
@@ -221,15 +204,13 @@ it("wires refreshing and onRefresh into the list's pull-to-refresh control", asy
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <FavoritesProvider>
-        <StationList
-          stations={[station]}
-          loading={false}
-          error={null}
-          refreshing
-          onRefresh={onRefresh}
-        />
-      </FavoritesProvider>,
+      <EvStationList
+        stations={[station]}
+        loading={false}
+        error={null}
+        refreshing
+        onRefresh={onRefresh}
+      />,
     );
   });
 
@@ -239,4 +220,18 @@ it("wires refreshing and onRefresh into the list's pull-to-refresh control", asy
 
   refreshControl.props.onRefresh();
   expect(onRefresh).toHaveBeenCalledTimes(1);
+});
+
+it('shows the default empty message when there are no stations', async () => {
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      <EvStationList stations={[]} loading={false} error={null} />,
+    );
+  });
+
+  const texts = renderer!.root
+    .findAllByType(Text)
+    .map(node => node.props.children);
+  expect(texts).toContain('No EV chargers found nearby.');
 });
