@@ -1,13 +1,32 @@
-import React, {useRef, useState} from 'react';
+import React, {useMemo, useRef, useState} from 'react';
 import {StyleSheet, Text, View} from 'react-native';
 
 import {EvStation, searchNearestEvStations} from '../api/client';
 import LocationSearchBar, {
   LocationQuery,
 } from '../components/LocationSearchBar';
+import EvFilterControl, {
+  EvFilterSelection,
+} from '../components/EvFilterControl';
 import EvStationList from '../components/EvStationList';
 import EvStationMap from '../components/EvStationMap';
 import ViewModeToggle, {ViewMode} from '../components/ViewModeToggle';
+import {
+  connectorOptionsFromStations,
+  filterStationsByChargerLevels,
+  filterStationsByConnectors,
+  filterStationsByNetworks,
+  networkOptionsFromStations,
+} from '../utils/evFilters';
+
+const NO_MATCHING_FILTERS_MESSAGE =
+  'No EV chargers match the selected filters.';
+
+const INITIAL_EV_FILTER_SELECTION: EvFilterSelection = {
+  networkKeys: null,
+  connectorKeys: null,
+  chargerLevelKeys: null,
+};
 
 // AFDC has no cursor-based pagination — `limit` is the total nearest
 // stations to return, already sorted by distance. "Load More" re-requests
@@ -79,11 +98,60 @@ function EvScreen({
   );
   const [loadingMore, setLoadingMore] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('list');
+  // Not persisted across tab switches — a view preference, same treatment
+  // as viewMode above rather than search result data.
+  const [evFilterSelection, setEvFilterSelection] = useState<EvFilterSelection>(
+    INITIAL_EV_FILTER_SELECTION,
+  );
   // Bumped only for a fresh location search (search bar or current
   // location), never for "Search this area" — EvStationMap watches this to
   // decide when to recenter/zoom the map versus just patching in new pins
   // at whatever pan/zoom the user currently has.
   const [mapRecenterToken, setMapRecenterToken] = useState(0);
+
+  // Filter options are drawn from List view's own results — Map view uses
+  // the same options and selection rather than deriving its own from its
+  // (much larger) pool, so switching between List and Map never changes
+  // what a given filter selection means.
+  const networkOptions = useMemo(
+    () => networkOptionsFromStations(stations),
+    [stations],
+  );
+  const connectorOptions = useMemo(
+    () => connectorOptionsFromStations(stations),
+    [stations],
+  );
+
+  const filteredStations = useMemo(
+    () =>
+      filterStationsByChargerLevels(
+        filterStationsByConnectors(
+          filterStationsByNetworks(stations, evFilterSelection.networkKeys),
+          evFilterSelection.connectorKeys,
+        ),
+        evFilterSelection.chargerLevelKeys,
+      ),
+    [stations, evFilterSelection],
+  );
+  const filteredMapStations = useMemo(
+    () =>
+      filterStationsByChargerLevels(
+        filterStationsByConnectors(
+          filterStationsByNetworks(mapStations, evFilterSelection.networkKeys),
+          evFilterSelection.connectorKeys,
+        ),
+        evFilterSelection.chargerLevelKeys,
+      ),
+    [mapStations, evFilterSelection],
+  );
+  const emptyMessage =
+    stations.length > 0 && filteredStations.length === 0
+      ? NO_MATCHING_FILTERS_MESSAGE
+      : undefined;
+  const mapEmptyMessage =
+    mapStations.length > 0 && filteredMapStations.length === 0
+      ? NO_MATCHING_FILTERS_MESSAGE
+      : undefined;
 
   // Refs (not state) so handleLoadMore reads the latest value synchronously,
   // without waiting on a re-render — mirrors HomeScreen's own refs.
@@ -287,11 +355,17 @@ function EvScreen({
           {stations.length > 0 && (
             <View style={styles.controlsRow}>
               <ViewModeToggle value={viewMode} onChange={setViewMode} />
+              <EvFilterControl
+                networkOptions={networkOptions}
+                connectorOptions={connectorOptions}
+                selection={evFilterSelection}
+                onApply={setEvFilterSelection}
+              />
             </View>
           )}
           {viewMode === 'list' ? (
             <EvStationList
-              stations={stations}
+              stations={filteredStations}
               loading={searching}
               error={searchError}
               onLoadMore={handleLoadMore}
@@ -299,15 +373,17 @@ function EvScreen({
               loadingMore={loadingMore}
               refreshing={refreshing}
               onRefresh={handleRefresh}
+              emptyMessage={emptyMessage}
             />
           ) : (
             <EvStationMap
-              stations={mapStations}
+              stations={filteredMapStations}
               center={searchLocationRef.current}
               loading={mapLoading}
               error={mapError}
               recenterSignal={mapRecenterToken}
               onSearchArea={handleSearchThisArea}
+              emptyMessage={mapEmptyMessage}
             />
           )}
         </>
@@ -331,7 +407,7 @@ const styles = StyleSheet.create({
   controlsRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'flex-end',
+    justifyContent: 'space-between',
     paddingHorizontal: 16,
     marginTop: 10,
   },

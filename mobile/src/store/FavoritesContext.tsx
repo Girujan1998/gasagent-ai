@@ -16,6 +16,11 @@ type FavoritesContextValue = {
   favorites: GasStation[];
   isFavorite: (stationId: string) => boolean;
   toggleFavorite: (station: GasStation) => void;
+  // Replaces the favorites list wholesale with a new ordering of the same
+  // stations — the array's order is itself the persisted display order
+  // (see AsyncStorage above), so drag-to-reorder is just "store this
+  // permutation" rather than a separate sort-key concept.
+  reorderFavorites: (stations: GasStation[]) => void;
   isReady: boolean;
 };
 
@@ -65,9 +70,19 @@ function FavoritesProvider({
     );
   }, []);
 
+  const reorderFavorites = useCallback((stations: GasStation[]) => {
+    setFavorites(stations);
+  }, []);
+
   const value = useMemo(
-    () => ({favorites, isFavorite, toggleFavorite, isReady: loaded}),
-    [favorites, isFavorite, toggleFavorite, loaded],
+    () => ({
+      favorites,
+      isFavorite,
+      toggleFavorite,
+      reorderFavorites,
+      isReady: loaded,
+    }),
+    [favorites, isFavorite, toggleFavorite, reorderFavorites, loaded],
   );
 
   return (

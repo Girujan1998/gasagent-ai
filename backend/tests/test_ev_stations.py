@@ -1,9 +1,9 @@
 from fastapi.testclient import TestClient
 
-from app.api.routes.ev_stations import get_afdc_service
+from app.api.routes.ev_stations import get_ev_search_service
 from app.main import app
 from app.models.schemas import EvStation
-from app.services.afdc_client import EvStationSearchResult
+from app.services.ev_search import EvStationSearchResult
 
 client = TestClient(app)
 
@@ -30,7 +30,7 @@ def make_ev_station(station_id: str) -> EvStation:
     )
 
 
-class FakeAfdcService:
+class FakeEvSearchService:
     def __init__(self, total_results: int = 1):
         self._total_results = total_results
         self.last_call_kwargs: dict | None = None
@@ -59,7 +59,7 @@ def test_search_requires_query_or_coordinates():
 
 
 def test_search_returns_ev_stations():
-    app.dependency_overrides[get_afdc_service] = lambda: FakeAfdcService()
+    app.dependency_overrides[get_ev_search_service] = lambda: FakeEvSearchService()
     try:
         response = client.get("/api/v1/ev-stations/search", params={"query": "60614"})
     finally:
@@ -89,7 +89,7 @@ def test_search_returns_ev_stations():
 def test_search_reports_total_results_separately_from_returned_results():
     # Signals to the client that "load more" would actually fetch more —
     # 5 total exist even though this page only returned 1.
-    app.dependency_overrides[get_afdc_service] = lambda: FakeAfdcService(
+    app.dependency_overrides[get_ev_search_service] = lambda: FakeEvSearchService(
         total_results=5
     )
     try:
@@ -104,8 +104,8 @@ def test_search_reports_total_results_separately_from_returned_results():
 
 
 def test_search_forwards_coordinates_and_limit():
-    fake_service = FakeAfdcService()
-    app.dependency_overrides[get_afdc_service] = lambda: fake_service
+    fake_service = FakeEvSearchService()
+    app.dependency_overrides[get_ev_search_service] = lambda: fake_service
     try:
         response = client.get(
             "/api/v1/ev-stations/search",
@@ -125,8 +125,8 @@ def test_search_forwards_coordinates_and_limit():
 
 
 def test_search_forwards_radius_km():
-    fake_service = FakeAfdcService()
-    app.dependency_overrides[get_afdc_service] = lambda: fake_service
+    fake_service = FakeEvSearchService()
+    app.dependency_overrides[get_ev_search_service] = lambda: fake_service
     try:
         response = client.get(
             "/api/v1/ev-stations/search",

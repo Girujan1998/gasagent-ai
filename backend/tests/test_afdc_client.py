@@ -76,6 +76,9 @@ async def test_search_maps_afdc_fields_onto_ev_station():
     assert station.dc_fast_count is None
     assert station.connector_types == ["J1772"]
     assert station.date_last_confirmed == "2026-08-16"
+    # AFDC has no community layer at all.
+    assert station.comments == []
+    assert station.photo_urls == []
 
 
 @pytest.mark.asyncio

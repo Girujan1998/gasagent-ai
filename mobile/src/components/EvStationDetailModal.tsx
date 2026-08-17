@@ -1,9 +1,23 @@
-import React from 'react';
-import {Modal, StyleSheet, Text, TouchableOpacity, View} from 'react-native';
+import React, {useState} from 'react';
+import {
+  Image,
+  Modal,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 
-import {EvStation} from '../api/client';
+import {EvStation, EvStationComment} from '../api/client';
 import {milesToKm} from '../utils/distance';
-import {chargerCountSummary, formatConnectorType} from '../utils/evConnectors';
+import {
+  chargerCountSummary,
+  connectorSpecLabel,
+  formatConnectorSpecs,
+  formatConnectorType,
+  networkLogoUrl,
+} from '../utils/evConnectors';
 import {openDirections} from '../utils/maps';
 
 type Props = {
@@ -15,6 +29,27 @@ function NavigateIcon(): React.JSX.Element {
   return (
     <View style={styles.navigateIconCircle}>
       <View style={styles.navigateIconArrow} />
+    </View>
+  );
+}
+
+function NetworkLogo({url}: {url: string | null}): React.JSX.Element {
+  const [failed, setFailed] = useState(false);
+
+  if (url && !failed) {
+    return (
+      <Image
+        source={{uri: url}}
+        style={styles.iconWrap}
+        resizeMode="contain"
+        onError={() => setFailed(true)}
+      />
+    );
+  }
+
+  return (
+    <View style={styles.iconWrap}>
+      <Text style={styles.iconText}>⚡</Text>
     </View>
   );
 }
@@ -49,6 +84,40 @@ function DetailRow({
   );
 }
 
+function CommentCard({
+  comment,
+}: {
+  comment: EvStationComment;
+}): React.JSX.Element {
+  return (
+    <View style={styles.commentCard}>
+      <View style={styles.commentHeader}>
+        <Text style={styles.commentAuthor} numberOfLines={1}>
+          {comment.author}
+        </Text>
+        {comment.date && (
+          <Text style={styles.commentDate}>
+            {formatConfirmedDate(comment.date)}
+          </Text>
+        )}
+      </View>
+      {comment.checkin_status && (
+        <Text
+          style={[
+            styles.commentStatus,
+            comment.checkin_is_positive === true &&
+              styles.commentStatusPositive,
+            comment.checkin_is_positive === false &&
+              styles.commentStatusNegative,
+          ]}>
+          {comment.checkin_status}
+        </Text>
+      )}
+      <Text style={styles.commentText}>{comment.text}</Text>
+    </View>
+  );
+}
+
 function EvStationDetailModal({station, onClose}: Props): React.JSX.Element {
   return (
     <Modal
@@ -67,11 +136,18 @@ function EvStationDetailModal({station, onClose}: Props): React.JSX.Element {
           </TouchableOpacity>
 
           {station && (
-            <>
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.scrollContent}>
               <View style={styles.header}>
-                <View style={styles.iconWrap}>
-                  <Text style={styles.iconText}>⚡</Text>
-                </View>
+                <NetworkLogo
+                  // Forces a fresh mount when a different station is
+                  // selected, so a previous station's failed logo doesn't
+                  // stick around as the fallback for this one — the modal
+                  // itself never unmounts between selections.
+                  key={station.station_id}
+                  url={networkLogoUrl(station.network_web)}
+                />
                 <View style={styles.headerText}>
                   <Text style={styles.name} numberOfLines={2}>
                     {station.name}
@@ -105,6 +181,19 @@ function EvStationDetailModal({station, onClose}: Props): React.JSX.Element {
                 </View>
               )}
 
+              {station.connector_details.length > 0 && (
+                <View style={styles.chipsSection}>
+                  <Text style={styles.chipsLabel}>Charger Specs</Text>
+                  {station.connector_details.map((detail, index) => (
+                    <DetailRow
+                      key={`${detail.connector_type}-${index}`}
+                      label={connectorSpecLabel(detail)}
+                      value={formatConnectorSpecs(detail)}
+                    />
+                  ))}
+                </View>
+              )}
+
               <View style={styles.detailsSection}>
                 <DetailRow
                   label="Chargers"
@@ -128,6 +217,34 @@ function EvStationDetailModal({station, onClose}: Props): React.JSX.Element {
                 />
               </View>
 
+              {station.photo_urls.length > 0 && (
+                <View style={styles.photosSection}>
+                  <Text style={styles.chipsLabel}>Photos</Text>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                    {station.photo_urls.map(url => (
+                      <Image
+                        key={url}
+                        source={{uri: url}}
+                        style={styles.photoThumbnail}
+                        resizeMode="cover"
+                      />
+                    ))}
+                  </ScrollView>
+                </View>
+              )}
+
+              {station.comments.length > 0 && (
+                <View style={styles.commentsSection}>
+                  <Text style={styles.chipsLabel}>Community Notes</Text>
+                  {station.comments.map(comment => (
+                    <CommentCard
+                      key={`${comment.author}-${comment.date}-${comment.text}`}
+                      comment={comment}
+                    />
+                  ))}
+                </View>
+              )}
+
               <TouchableOpacity
                 style={styles.navigateButton}
                 disabled={station.latitude == null || station.longitude == null}
@@ -146,7 +263,7 @@ function EvStationDetailModal({station, onClose}: Props): React.JSX.Element {
                   <Text style={styles.navigateButtonText}>Navigate</Text>
                 </View>
               </TouchableOpacity>
-            </>
+            </ScrollView>
           )}
         </View>
       </View>
@@ -164,7 +281,14 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    padding: 20,
+    paddingTop: 20,
+    paddingHorizontal: 20,
+    // Comments/photos can make the content tall enough to otherwise push
+    // the top of the sheet off-screen (it's anchored to the bottom, not
+    // centered) — capped and scrollable instead of growing unbounded.
+    maxHeight: '85%',
+  },
+  scrollContent: {
     paddingBottom: 32,
   },
   closeButton: {
@@ -310,6 +434,59 @@ const styles = StyleSheet.create({
     borderBottomColor: '#fff',
     transform: [{rotate: '45deg'}],
     marginBottom: 1,
+  },
+  photosSection: {
+    marginTop: 20,
+  },
+  photoThumbnail: {
+    width: 96,
+    height: 72,
+    borderRadius: 10,
+    marginRight: 8,
+    backgroundColor: '#f2f2f2',
+  },
+  commentsSection: {
+    marginTop: 20,
+  },
+  commentCard: {
+    backgroundColor: '#f7f7f7',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 8,
+  },
+  commentHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  commentAuthor: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#333',
+    flexShrink: 1,
+    marginRight: 8,
+  },
+  commentDate: {
+    fontSize: 11,
+    color: '#999',
+  },
+  commentStatus: {
+    marginTop: 4,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#888',
+    textTransform: 'uppercase',
+  },
+  commentStatusPositive: {
+    color: '#2e7d32',
+  },
+  commentStatusNegative: {
+    color: '#c62828',
+  },
+  commentText: {
+    marginTop: 4,
+    fontSize: 13,
+    color: '#444',
   },
 });
 

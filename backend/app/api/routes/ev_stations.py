@@ -1,12 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.models.schemas import EvStationSearchResponse
-from app.services.afdc_client import (
-    MAX_LIMIT,
-    AfdcError,
-    AfdcService,
-    get_afdc_service,
-)
+from app.services.afdc_client import MAX_LIMIT, AfdcError
+from app.services.ev_search import EvSearchService, get_ev_search_service
 from app.services.geocoding import GeocodingError
 
 router = APIRouter(prefix="/ev-stations", tags=["ev-stations"])
@@ -30,7 +26,7 @@ async def search_ev_stations(
     radius_km: float | None = Query(
         None, gt=0, le=200, description="Search radius in kilometers"
     ),
-    service: AfdcService = Depends(get_afdc_service),
+    service: EvSearchService = Depends(get_ev_search_service),
 ) -> EvStationSearchResponse:
     """Return the nearest public EV charging stations for a location."""
     if not query and (lat is None or lon is None):

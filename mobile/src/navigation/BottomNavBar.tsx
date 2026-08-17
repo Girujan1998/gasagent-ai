@@ -41,7 +41,7 @@ const LEFT_TABS: TabConfig[] = [
 
 const RIGHT_TABS: TabConfig[] = [
   {key: 'favorites', label: 'Favorites', icon: '⭐'},
-  {key: 'personal', label: 'Personal', icon: '👤'},
+  {key: 'personal', label: 'Notifications', icon: '🔔'},
 ];
 
 // Always a plain emoji, unlike TabConfig — the raised center button never

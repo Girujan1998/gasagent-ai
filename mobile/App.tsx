@@ -25,7 +25,7 @@ const PLACEHOLDER_TITLES: Record<
   string
 > = {
   chat: 'Chat',
-  personal: 'Personal',
+  personal: 'Notifications',
 };
 
 function ActiveScreen({

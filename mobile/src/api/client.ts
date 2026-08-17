@@ -56,6 +56,28 @@ export type LocationAutocompleteResponse = {
 
 export type StationSearchParams = {query: string} | {lat: number; lon: number};
 
+export type EvStationComment = {
+  author: string;
+  text: string;
+  date: string | null;
+  // OCM-only signal for whether this comment confirms the charger actually
+  // worked when the commenter visited, e.g. "Charged Successfully" vs
+  // "Failed to Charge (Equipment Not Operational)".
+  checkin_status: string | null;
+  checkin_is_positive: boolean | null;
+};
+
+// OCM-only — AFDC has no equivalent per-connector electrical spec data at
+// all. A station can have multiple connectors of the same type with
+// different specs, so this is a flat list, not keyed by connector type.
+export type EvConnectorDetail = {
+  connector_type: string;
+  quantity: number | null;
+  amps: number | null;
+  voltage: number | null;
+  power_kw: number | null;
+};
+
 export type EvStation = {
   station_id: string;
   name: string;
@@ -73,7 +95,10 @@ export type EvStation = {
   level2_count: number | null;
   dc_fast_count: number | null;
   connector_types: string[];
+  connector_details: EvConnectorDetail[];
   date_last_confirmed: string | null;
+  comments: EvStationComment[];
+  photo_urls: string[];
 };
 
 export type EvStationSearchResponse = {

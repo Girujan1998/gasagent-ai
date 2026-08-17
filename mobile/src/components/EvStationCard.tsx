@@ -1,18 +1,52 @@
-import React from 'react';
-import {StyleSheet, Text, TouchableOpacity, View} from 'react-native';
+import React, {useState} from 'react';
+import {Image, StyleSheet, Text, TouchableOpacity, View} from 'react-native';
 
-import {EvStation} from '../api/client';
+import {EvConnectorDetail, EvStation} from '../api/client';
 import {milesToKm} from '../utils/distance';
-import {chargerCountSummary, formatConnectorType} from '../utils/evConnectors';
+import {
+  chargerCountSummary,
+  connectorSpecLabel,
+  formatConnectorSpecs,
+  formatConnectorType,
+  networkLogoUrl,
+} from '../utils/evConnectors';
 
 type Props = {
   station: EvStation;
   onPress?: () => void;
 };
 
+function NetworkLogo({url}: {url: string | null}): React.JSX.Element {
+  const [failed, setFailed] = useState(false);
+
+  if (url && !failed) {
+    return (
+      <Image
+        source={{uri: url}}
+        style={styles.iconWrap}
+        resizeMode="contain"
+        onError={() => setFailed(true)}
+      />
+    );
+  }
+
+  return (
+    <View style={styles.iconWrap}>
+      <Text style={styles.iconText}>⚡</Text>
+    </View>
+  );
+}
+
 function EvStationCard({station, onPress}: Props): React.JSX.Element {
   const summary = chargerCountSummary(station);
   const connectors = station.connector_types.map(formatConnectorType);
+  // OCM-only — an AFDC-sourced connector has no specs, so it's dropped here
+  // rather than shown as an empty row.
+  const specRows: {detail: EvConnectorDetail; specs: string}[] =
+    station.connector_details.flatMap(detail => {
+      const specs = formatConnectorSpecs(detail);
+      return specs ? [{detail, specs}] : [];
+    });
 
   return (
     <TouchableOpacity
@@ -22,9 +56,7 @@ function EvStationCard({station, onPress}: Props): React.JSX.Element {
       activeOpacity={0.85}
       accessibilityLabel={`View details for ${station.name}`}>
       <View style={styles.headerRow}>
-        <View style={styles.iconWrap}>
-          <Text style={styles.iconText}>⚡</Text>
-        </View>
+        <NetworkLogo url={networkLogoUrl(station.network_web)} />
         <View style={styles.headerTextColumn}>
           <Text style={styles.name} numberOfLines={1}>
             {station.name}
@@ -60,6 +92,23 @@ function EvStationCard({station, onPress}: Props): React.JSX.Element {
               {summary}
             </Text>
           )}
+        </View>
+      )}
+
+      {specRows.length > 0 && (
+        <View style={styles.specsSection}>
+          {specRows.map(({detail, specs}, index) => (
+            <View
+              key={`${detail.connector_type}-${index}`}
+              style={styles.specsRow}>
+              <Text style={styles.specsLabel} numberOfLines={1}>
+                {connectorSpecLabel(detail)}
+              </Text>
+              <Text style={styles.specsValue} numberOfLines={1}>
+                {specs}
+              </Text>
+            </View>
+          ))}
         </View>
       )}
     </TouchableOpacity>
@@ -128,6 +177,29 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#666',
     marginTop: 2,
+  },
+  specsSection: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#eee',
+    gap: 4,
+  },
+  specsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  specsLabel: {
+    fontSize: 12,
+    color: '#444',
+    flexShrink: 1,
+    marginRight: 8,
+  },
+  specsValue: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#222',
   },
 });
 

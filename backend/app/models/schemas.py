@@ -54,6 +54,30 @@ class StationSearchResponse(BaseModel):
     lon: float
 
 
+class EvStationComment(BaseModel):
+    author: str
+    text: str
+    date: str | None = None
+    # OCM's own signal for whether this comment confirms the charger
+    # actually worked when the commenter visited — e.g. "Charged
+    # Successfully" vs "Failed to Charge (Equipment Not Operational)" —
+    # a stronger, more specific signal than the free-text comment alone.
+    # Only OCM has this; always None for a comment sourced any other way.
+    checkin_status: str | None = None
+    # OCM's own True/False/unset flag for whether checkin_status counts as
+    # a good or bad report — lets the UI color-code a comment without
+    # having to pattern-match checkin_status's own text.
+    checkin_is_positive: bool | None = None
+
+
+class EvConnectorDetail(BaseModel):
+    connector_type: str
+    quantity: int | None = None
+    amps: float | None = None
+    voltage: float | None = None
+    power_kw: float | None = None
+
+
 class EvStation(BaseModel):
     station_id: str
     name: str
@@ -75,7 +99,18 @@ class EvStation(BaseModel):
     level2_count: int | None = None
     dc_fast_count: int | None = None
     connector_types: list[str] = []
+    # Per-connector electrical specs — OCM-only, AFDC has no equivalent
+    # fields at all. Kept separate from connector_types (a deduplicated
+    # list of codes) since a station can have multiple connectors of the
+    # same type with different specs (e.g. two J1772s at different power).
+    connector_details: list[EvConnectorDetail] = []
     date_last_confirmed: str | None = None
+    # OCM-only — AFDC has no community layer at all. Comments with no
+    # actual text (a check-in with no written note) are dropped rather
+    # than shown as an empty entry.
+    comments: list[EvStationComment] = []
+    # OCM-only — user-submitted photos of the station.
+    photo_urls: list[str] = []
 
 
 class EvStationSearchResponse(BaseModel):

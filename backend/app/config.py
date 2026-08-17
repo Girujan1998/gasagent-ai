@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     api_v1_prefix: str = "/api/v1"
     cors_origins: list[str] = ["*"]
     nrel_api_key: str = ""
+    ocm_api_key: str = ""
 
 
 @lru_cache

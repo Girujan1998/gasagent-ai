@@ -11,16 +11,44 @@ import {
 import {useFavorites} from '../store/FavoritesContext';
 import {haversineMiles} from '../utils/distance';
 import {requestLocationPermission} from '../utils/location';
+import FilterControl from '../components/FilterControl';
+import ReorderableFavoritesList from '../components/ReorderableFavoritesList';
 import StationList from '../components/StationList';
+import {
+  DEFAULT_PRIMARY_FUEL_KEY,
+  DEFAULT_SECONDARY_FUEL_KEY,
+  FuelKey,
+} from '../config/fuelDisplay';
+import {
+  brandOptionsFromStations,
+  filterStationsByBrands,
+} from '../utils/brandFilter';
+
+const NO_MATCHING_BRANDS_MESSAGE =
+  'No favorites match the selected brand filters.';
+const NO_FAVORITES_MESSAGE =
+  'No favorites yet. Tap the star on a gas station to save it here.';
 
 function FavoritesScreen(): React.JSX.Element {
-  const {favorites} = useFavorites();
+  const {favorites, reorderFavorites} = useFavorites();
+  const [reordering, setReordering] = useState(false);
   const [currentLocation, setCurrentLocation] = useState<{
     lat: number;
     lon: number;
   } | null>(null);
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
+  // Same filter concept as the Gas tab's FilterControl — a fuel-grade pair
+  // to price by, plus an optional brand allowlist — applied to the
+  // favorites list rather than a fresh search's results.
+  const [primaryFuelKey, setPrimaryFuelKey] = useState<FuelKey>(
+    DEFAULT_PRIMARY_FUEL_KEY,
+  );
+  const [secondaryFuelKey, setSecondaryFuelKey] = useState<FuelKey>(
+    DEFAULT_SECONDARY_FUEL_KEY,
+  );
+  const [selectedBrandKeys, setSelectedBrandKeys] =
+    useState<Set<string> | null>(null);
 
   const handleShareLocation = async () => {
     setLocationError(null);
@@ -68,13 +96,54 @@ function FavoritesScreen(): React.JSX.Element {
     );
   }, [favorites, currentLocation]);
 
+  const brandOptions = useMemo(
+    () => brandOptionsFromStations(favorites),
+    [favorites],
+  );
+  const filteredStations = useMemo(
+    () => filterStationsByBrands(stationsWithDistance, selectedBrandKeys),
+    [stationsWithDistance, selectedBrandKeys],
+  );
+  const emptyMessage =
+    favorites.length === 0
+      ? NO_FAVORITES_MESSAGE
+      : filteredStations.length === 0
+      ? NO_MATCHING_BRANDS_MESSAGE
+      : undefined;
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>Favorites</Text>
+        {favorites.length > 1 && (
+          <TouchableOpacity
+            onPress={() => setReordering(prev => !prev)}
+            hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
+            accessibilityLabel={
+              reordering ? 'Done reordering favorites' : 'Order favorites'
+            }>
+            <Text style={styles.orderButtonText}>
+              {reordering ? 'Done' : 'Order'}
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
 
-      {favorites.length > 0 && !currentLocation && (
+      {favorites.length > 0 && !reordering && (
+        <View style={styles.controlsRow}>
+          <FilterControl
+            primaryFuelKey={primaryFuelKey}
+            secondaryFuelKey={secondaryFuelKey}
+            onChangePrimaryFuelKey={setPrimaryFuelKey}
+            onChangeSecondaryFuelKey={setSecondaryFuelKey}
+            brandOptions={brandOptions}
+            selectedBrandKeys={selectedBrandKeys}
+            onApplyBrandFilters={setSelectedBrandKeys}
+          />
+        </View>
+      )}
+
+      {favorites.length > 0 && !currentLocation && !reordering && (
         <TouchableOpacity
           style={styles.locationBanner}
           onPress={handleShareLocation}
@@ -90,16 +159,25 @@ function FavoritesScreen(): React.JSX.Element {
         </TouchableOpacity>
       )}
 
-      {locationError && (
+      {locationError && !reordering && (
         <Text style={styles.locationError}>{locationError}</Text>
       )}
 
-      <StationList
-        stations={stationsWithDistance}
-        loading={false}
-        error={null}
-        emptyMessage="No favorites yet. Tap the star on a gas station to save it here."
-      />
+      {reordering ? (
+        <ReorderableFavoritesList
+          stations={favorites}
+          onReorder={reorderFavorites}
+        />
+      ) : (
+        <StationList
+          stations={filteredStations}
+          primaryFuelKey={primaryFuelKey}
+          secondaryFuelKey={secondaryFuelKey}
+          loading={false}
+          error={null}
+          emptyMessage={emptyMessage}
+        />
+      )}
     </View>
   );
 }
@@ -109,12 +187,27 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingTop: 16,
   },
   title: {
     fontSize: 24,
     fontWeight: '700',
+  },
+  orderButtonText: {
+    fontSize: 15,
+    color: '#1565c0',
+    fontWeight: '600',
+  },
+  controlsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    paddingHorizontal: 16,
+    marginTop: 10,
   },
   locationBanner: {
     marginHorizontal: 16,

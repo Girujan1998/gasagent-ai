@@ -29,7 +29,10 @@ const station: EvStation = {
   level2_count: 2,
   dc_fast_count: null,
   connector_types: ['J1772'],
+  connector_details: [],
   date_last_confirmed: null,
+  comments: [],
+  photo_urls: [],
 };
 
 const CENTER = {lat: 41.85, lon: -87.65};

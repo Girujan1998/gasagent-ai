@@ -36,7 +36,10 @@ function evStationsResponse(names: string[], totalResults: number) {
           level2_count: null,
           dc_fast_count: null,
           connector_types: [],
+          connector_details: [],
           date_last_confirmed: null,
+          comments: [],
+          photo_urls: [],
         })),
         total_results: totalResults,
         lat: 41.85,
@@ -444,6 +447,109 @@ it('switches to the map view without making any extra API calls', async () => {
   expect((global.fetch as jest.Mock).mock.calls.length).toBe(
     fetchCallsBeforeToggle,
   );
+});
+
+it('narrows both list and map results to stations matching an applied network filter, without any extra fetch', async () => {
+  mockFetchSequence([
+    evStationsResponse(['Zap', 'Volt'], 2), // initial list search
+    evStationsResponse(['Zap', 'Volt'], 2), // initial map-radius fetch
+  ]);
+
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      <EvScreen
+        persistedSearch={INITIAL_PERSISTED_EV_SEARCH}
+        onSearchComplete={() => {}}
+      />,
+    );
+  });
+
+  await search(renderer!, 'Chicago');
+  expect(renderer!.root.findByType(FlatList).props.data).toHaveLength(2);
+
+  const fetchCallsBeforeFilter = (global.fetch as jest.Mock).mock.calls.length;
+
+  // Each fixture station's network equals its own name, so unchecking
+  // "Volt" narrows down to just "Zap".
+  await act(async () => {
+    renderer!.root
+      .findByProps({accessibilityLabel: 'Open filters'})
+      .props.onPress();
+  });
+  await act(async () => {
+    renderer!.root
+      .findByProps({accessibilityLabel: 'Hide Volt'})
+      .props.onPress();
+  });
+  await act(async () => {
+    renderer!.root
+      .findByProps({accessibilityLabel: 'Apply filters'})
+      .props.onPress();
+  });
+
+  expect(
+    renderer!.root
+      .findByType(FlatList)
+      .props.data.map((s: {name: string}) => s.name),
+  ).toEqual(['Zap']);
+  // Filtering is entirely client-side — applying it makes no new requests.
+  expect((global.fetch as jest.Mock).mock.calls.length).toBe(
+    fetchCallsBeforeFilter,
+  );
+
+  await act(async () => {
+    renderer!.root
+      .findByProps({accessibilityLabel: 'Show map view'})
+      .props.onPress();
+  });
+  const idMatches =
+    renderer!.root
+      .findByType(WebView)
+      .props.source.html.match(/"id":"[^"]+"/g) ?? [];
+  expect(idMatches).toHaveLength(1);
+});
+
+it('shows a fallback message when no stations match the applied filters', async () => {
+  mockFetchSequence([
+    evStationsResponse(['Zap'], 1), // initial list search
+    evStationsResponse(['Zap'], 1), // initial map-radius fetch
+  ]);
+
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      <EvScreen
+        persistedSearch={INITIAL_PERSISTED_EV_SEARCH}
+        onSearchComplete={() => {}}
+      />,
+    );
+  });
+
+  await search(renderer!, 'Chicago');
+
+  await act(async () => {
+    renderer!.root
+      .findByProps({accessibilityLabel: 'Open filters'})
+      .props.onPress();
+  });
+  await act(async () => {
+    renderer!.root
+      .findByProps({accessibilityLabel: 'Hide Zap'})
+      .props.onPress();
+  });
+  await act(async () => {
+    renderer!.root
+      .findByProps({accessibilityLabel: 'Apply filters'})
+      .props.onPress();
+  });
+
+  expect(renderer!.root.findAllByType(FlatList)).toHaveLength(0);
+  expect(
+    renderer!.root.findByProps({
+      children: 'No EV chargers match the selected filters.',
+    }),
+  ).toBeTruthy();
 });
 
 it('caps total fetched stations at 40, targeting 20 more at a time, then hides Load More', async () => {

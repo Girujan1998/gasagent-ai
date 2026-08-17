@@ -1,9 +1,11 @@
 import {EvStation} from '../api/client';
+import {networkLogoUrl} from './evConnectors';
 
 export type EvMapPin = {
   id: string;
   lat: number;
   lon: number;
+  logoUrl: string | null;
 };
 export type EvMapCenter = {lat: number; lon: number};
 export type EvStationMapData = {pins: EvMapPin[]; center: EvMapCenter | null};
@@ -12,6 +14,18 @@ function hasCoordinates(
   station: EvStation,
 ): station is EvStation & {latitude: number; longitude: number} {
   return station.latitude != null && station.longitude != null;
+}
+
+// A pin's logo URL ends up concatenated directly into an <img src="...">
+// on the JS side (see buildEvStationMapHtml), so it's escaped here — once,
+// at the source — the same way stationMapHtml.ts escapes a gas station's
+// brand_logo_url.
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 // Stations without coordinates can't be placed on the map, so they're
@@ -23,11 +37,15 @@ export function buildEvStationMapData(
 ): EvStationMapData {
   const pinnedStations = stations.filter(hasCoordinates);
 
-  const pins = pinnedStations.map(station => ({
-    id: station.station_id,
-    lat: station.latitude,
-    lon: station.longitude,
-  }));
+  const pins = pinnedStations.map(station => {
+    const logoUrl = networkLogoUrl(station.network_web);
+    return {
+      id: station.station_id,
+      lat: station.latitude,
+      lon: station.longitude,
+      logoUrl: logoUrl ? escapeHtml(logoUrl) : null,
+    };
+  });
   return {pins, center};
 }
 
@@ -88,6 +106,18 @@ export function buildEvStationMapHtml(data: EvStationMapData): string {
     transform: rotate(45deg);
     font-size: 15px;
     line-height: 1;
+    width: 18px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border-radius: 4px;
+  }
+  .ev-marker-icon img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
   }
   .center-pin {
     width: 14px;
@@ -113,9 +143,22 @@ export function buildEvStationMapHtml(data: EvStationMapData): string {
     maxZoom: 19,
   }).addTo(map);
 
-  var PIN_HTML =
-    '<div class="ev-marker"><div class="ev-marker-drop">' +
-    '<span class="ev-marker-icon">⚡</span></div></div>';
+  // Falls back to the bolt emoji (no logo reported, or the image failed to
+  // load) rather than leaving the pin blank.
+  window.handleEvLogoError = function (img) {
+    img.style.display = 'none';
+    img.parentNode.textContent = '⚡';
+  };
+
+  function pinHtml(pin) {
+    var icon = pin.logoUrl
+      ? '<img src="' + pin.logoUrl + '" onerror="handleEvLogoError(this)" alt="" />'
+      : '⚡';
+    return (
+      '<div class="ev-marker"><div class="ev-marker-drop">' +
+      '<span class="ev-marker-icon">' + icon + '</span></div></div>'
+    );
+  }
 
   var stationMarkers = [];
   var centerMarker = null;
@@ -145,7 +188,7 @@ export function buildEvStationMapHtml(data: EvStationMapData): string {
       var marker = L.marker([pin.lat, pin.lon], {
         icon: L.divIcon({
           className: '',
-          html: PIN_HTML,
+          html: pinHtml(pin),
           iconSize: [30, 37],
           // Bottom-center of the icon box — where the teardrop's point
           // sits — so the marker's tip lands exactly on the station's
