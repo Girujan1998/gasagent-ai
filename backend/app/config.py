@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["*"]
     nrel_api_key: str = ""
     ocm_api_key: str = ""
+    eia_api_key: str = ""
 
 
 @lru_cache

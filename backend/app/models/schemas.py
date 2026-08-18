@@ -113,6 +113,69 @@ class EvStation(BaseModel):
     photo_urls: list[str] = []
 
 
+class GasPriceForecast(BaseModel):
+    lat: float
+    lon: float
+    # The average of nearby stations' current regular-grade price, live
+    # from GasBuddy — None if no nearby station reported one.
+    today_average_price: float | None = None
+    # today_average_price projected one day forward using a national
+    # trend's daily-prorated rate of change. None whenever
+    # today_average_price itself is None (nothing to project from).
+    forecasted_price: float | None = None
+    # GasBuddy formats prices differently by region (e.g. "$3.19" in the
+    # US vs "167.7¢" in Canada) and neither raw float alone says which —
+    # these mirror whichever convention the sampled stations themselves
+    # used, so the client can show a correctly-styled price without
+    # guessing at units or currency.
+    today_average_formatted: str | None = None
+    forecasted_price_formatted: str | None = None
+    # forecasted_price - today_average_price, with an explicit +/- sign in
+    # the formatted version (unlike the absolute prices above, the sign is
+    # the whole point here). None under the same condition as
+    # forecasted_price itself.
+    price_change: float | None = None
+    price_change_formatted: str | None = None
+    trend_direction: str = "flat"  # "up" | "down" | "flat"
+    # The prorated day-over-day rate implied by the trend source (e.g.
+    # 0.0023 = +0.23%/day) — None when no trend source was available, in
+    # which case forecasted_price just equals today_average_price.
+    daily_change_pct: float | None = None
+    # Which national data source the trend came from. "none" means the
+    # location's country couldn't be resolved, isn't US/Canada, or (for a
+    # US location) no EIA API key is configured — the forecast still shows
+    # today's average, just with no projected change applied.
+    source: str = "none"  # "statcan" | "eia" | "none"
+    # The most recent period the trend source's data covers, e.g. "2026-07-01"
+    # for Statistics Canada's monthly series or an EIA week-ending date —
+    # None when source is "none".
+    source_period_end: str | None = None
+    # How many nearby stations contributed to today_average_price — shown
+    # for transparency about how reliable the local average is.
+    stations_sampled: int = 0
+
+    # The spread across nearby stations, not just their average — each end
+    # projected forward using the same daily trend rate applied to that
+    # station's own current price, so a station that's unusually cheap or
+    # expensive today stays unusually cheap or expensive in the forecast
+    # rather than reverting toward the mean. None when today_average_price
+    # is None (nothing to project from).
+    today_lowest_price: float | None = None
+    today_highest_price: float | None = None
+    today_lowest_formatted: str | None = None
+    today_highest_formatted: str | None = None
+    forecasted_lowest_price: float | None = None
+    forecasted_highest_price: float | None = None
+    forecasted_lowest_formatted: str | None = None
+    forecasted_highest_formatted: str | None = None
+    # Same day-over-day delta concept as price_change, for each end of the
+    # range.
+    lowest_price_change: float | None = None
+    lowest_price_change_formatted: str | None = None
+    highest_price_change: float | None = None
+    highest_price_change_formatted: str | None = None
+
+
 class EvStationSearchResponse(BaseModel):
     results: list[EvStation]
     # How many stations actually matched, versus how many were returned

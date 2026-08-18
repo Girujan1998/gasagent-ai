@@ -7,7 +7,7 @@ import Geolocation from '@react-native-community/geolocation';
 import React from 'react';
 import {FlatList} from 'react-native';
 import {act, create, ReactTestRenderer} from 'react-test-renderer';
-import {it, expect, beforeEach} from '@jest/globals';
+import {it, expect, jest, beforeEach} from '@jest/globals';
 
 import {GasStation} from '../src/api/client';
 import StationCard from '../src/components/StationCard';
@@ -42,6 +42,19 @@ function makeStation(
 }
 
 const station = makeStation('abc', 'Test Station');
+
+function stationSearchResponse(results: GasStation[]) {
+  return {
+    ok: true,
+    json: () =>
+      Promise.resolve({
+        results,
+        next_cursor: null,
+        lat: 41.9,
+        lon: -87.6,
+      }),
+  };
+}
 
 beforeEach(async () => {
   await AsyncStorage.clear();
@@ -80,13 +93,20 @@ it('adds and removes a station from favorites via the star button', async () => 
 it('hides distance until location is shared, then shows it', async () => {
   await AsyncStorage.setItem('gasaiagent:favorites', JSON.stringify([station]));
 
-  (Geolocation.getCurrentPosition as jest.Mock).mockImplementation(
-    (
-      success: (pos: {coords: {latitude: number; longitude: number}}) => void,
-    ) => {
-      success({coords: {latitude: 41.95, longitude: -87.65}});
-    },
-  );
+  jest.mocked(Geolocation.getCurrentPosition).mockImplementation(success => {
+    success({
+      coords: {
+        latitude: 41.95,
+        longitude: -87.65,
+        altitude: null,
+        accuracy: 0,
+        altitudeAccuracy: null,
+        heading: null,
+        speed: null,
+      },
+      timestamp: 0,
+    });
+  });
 
   let renderer: ReactTestRenderer;
   await act(async () => {
@@ -359,4 +379,109 @@ it('hides the filter button while reordering', async () => {
   expect(() =>
     renderer!.root.findByProps({accessibilityLabel: 'Open filters'}),
   ).toThrow();
+});
+
+it('pulling to refresh re-queries each favorite and updates its price', async () => {
+  await AsyncStorage.setItem('gasaiagent:favorites', JSON.stringify([station]));
+
+  const refreshedStation: GasStation = {
+    ...station,
+    regular: {
+      price: 158.9,
+      formatted_price: '158.9¢',
+      last_updated: '2026-08-18T00:00:00.000Z',
+    },
+  };
+  global.fetch = jest.fn(() =>
+    Promise.resolve(stationSearchResponse([refreshedStation])),
+  ) as unknown as typeof fetch;
+
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      <FavoritesProvider>
+        <FavoritesScreen />
+      </FavoritesProvider>,
+    );
+  });
+
+  expect(renderer!.root.findByType(FlatList).props.data[0].regular).toBeNull();
+
+  await act(async () => {
+    await renderer!.root
+      .findByType(FlatList)
+      .props.refreshControl.props.onRefresh();
+  });
+
+  const url = (global.fetch as jest.Mock).mock.calls[0][0] as string;
+  expect(url).toContain('lat=41.9');
+  expect(url).toContain('lon=-87.6');
+  expect(
+    renderer!.root.findByType(FlatList).props.data[0].regular.formatted_price,
+  ).toBe('158.9¢');
+
+  const stored = JSON.parse(
+    (await AsyncStorage.getItem('gasaiagent:favorites'))!,
+  );
+  expect(stored[0].regular.formatted_price).toBe('158.9¢');
+});
+
+it('leaves a favorite unchanged when its refresh lookup finds no matching station', async () => {
+  await AsyncStorage.setItem('gasaiagent:favorites', JSON.stringify([station]));
+
+  const unrelatedStation = makeStation('xyz', 'Different Station');
+  global.fetch = jest.fn(() =>
+    Promise.resolve(stationSearchResponse([unrelatedStation])),
+  ) as unknown as typeof fetch;
+
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      <FavoritesProvider>
+        <FavoritesScreen />
+      </FavoritesProvider>,
+    );
+  });
+
+  await act(async () => {
+    await renderer!.root
+      .findByType(FlatList)
+      .props.refreshControl.props.onRefresh();
+  });
+
+  expect(renderer!.root.findByType(FlatList).props.data[0].station_id).toBe(
+    'abc',
+  );
+  expect(renderer!.root.findByType(FlatList).props.data[0].regular).toBeNull();
+});
+
+it('skips the network entirely when no favorite has saved coordinates', async () => {
+  const stationWithoutCoords: GasStation = {
+    ...station,
+    latitude: null,
+    longitude: null,
+  };
+  await AsyncStorage.setItem(
+    'gasaiagent:favorites',
+    JSON.stringify([stationWithoutCoords]),
+  );
+  const fetchMock = jest.fn();
+  global.fetch = fetchMock as unknown as typeof fetch;
+
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      <FavoritesProvider>
+        <FavoritesScreen />
+      </FavoritesProvider>,
+    );
+  });
+
+  await act(async () => {
+    await renderer!.root
+      .findByType(FlatList)
+      .props.refreshControl.props.onRefresh();
+  });
+
+  expect(fetchMock).not.toHaveBeenCalled();
 });

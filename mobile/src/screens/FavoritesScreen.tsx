@@ -8,6 +8,7 @@ import {
   View,
 } from 'react-native';
 
+import {GasStation, searchNearestStations} from '../api/client';
 import {useFavorites} from '../store/FavoritesContext';
 import {haversineMiles} from '../utils/distance';
 import {requestLocationPermission} from '../utils/location';
@@ -30,8 +31,9 @@ const NO_FAVORITES_MESSAGE =
   'No favorites yet. Tap the star on a gas station to save it here.';
 
 function FavoritesScreen(): React.JSX.Element {
-  const {favorites, reorderFavorites} = useFavorites();
+  const {favorites, reorderFavorites, updateFavoritePrices} = useFavorites();
   const [reordering, setReordering] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [currentLocation, setCurrentLocation] = useState<{
     lat: number;
     lon: number;
@@ -75,6 +77,51 @@ function FavoritesScreen(): React.JSX.Element {
       },
       {enableHighAccuracy: true, timeout: 15000},
     );
+  };
+
+  // Favorites store a snapshot of the station (including price) from when
+  // it was saved, so unlike the Gas tab there's nothing to re-fetch on a
+  // timer — pulling to refresh re-queries GasBuddy at each favorite's own
+  // coordinates and updates just the price fields, one call per favorite
+  // (there's no batch "get by id" endpoint). A favorite with no saved
+  // coordinates, or whose lookup fails or no longer matches by station_id,
+  // is left showing its last-known price rather than being dropped.
+  const handleRefresh = async () => {
+    const refreshable = favorites.filter(
+      station => station.latitude != null && station.longitude != null,
+    );
+    if (refreshable.length === 0) {
+      return;
+    }
+
+    setRefreshing(true);
+    try {
+      const results = await Promise.allSettled(
+        refreshable.map(station =>
+          searchNearestStations(
+            {lat: station.latitude as number, lon: station.longitude as number},
+            1,
+          ),
+        ),
+      );
+      const updates: GasStation[] = [];
+      results.forEach((result, index) => {
+        if (result.status !== 'fulfilled') {
+          return;
+        }
+        const match = result.value.results.find(
+          station => station.station_id === refreshable[index].station_id,
+        );
+        if (match) {
+          updates.push(match);
+        }
+      });
+      if (updates.length > 0) {
+        updateFavoritePrices(updates);
+      }
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   const stationsWithDistance = useMemo(() => {
@@ -175,6 +222,8 @@ function FavoritesScreen(): React.JSX.Element {
           secondaryFuelKey={secondaryFuelKey}
           loading={false}
           error={null}
+          refreshing={refreshing}
+          onRefresh={handleRefresh}
           emptyMessage={emptyMessage}
         />
       )}

@@ -39,6 +39,17 @@ function initialLocationLabel(
   )}`;
 }
 
+// A human-readable label for a definite (non-null) LocationQuery — what
+// the user typed/selected for a text search, or its coordinates for a
+// "current location" one. Used wherever a search's location needs to be
+// shown elsewhere in the app (e.g. the Notifications tab's forecast),
+// without a second geocoding call just to get a display name.
+export function locationQueryLabel(query: LocationQuery): string {
+  return query.type === 'text'
+    ? query.value
+    : `${query.latitude.toFixed(4)}, ${query.longitude.toFixed(4)}`;
+}
+
 function LocationSearchBar({onSearch, initialQuery}: Props): React.JSX.Element {
   const [query, setQuery] = useState(() => initialQueryText(initialQuery));
   const [locating, setLocating] = useState(false);

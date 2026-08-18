@@ -21,6 +21,11 @@ type FavoritesContextValue = {
   // (see AsyncStorage above), so drag-to-reorder is just "store this
   // permutation" rather than a separate sort-key concept.
   reorderFavorites: (stations: GasStation[]) => void;
+  // Replaces each favorite with its freshly-fetched counterpart (matched by
+  // station_id) — e.g. after a pull-to-refresh re-queries live prices.
+  // Favorites not present in `updates` (a failed lookup, or one with no
+  // coordinates to refresh from) are left untouched rather than dropped.
+  updateFavoritePrices: (updates: GasStation[]) => void;
   isReady: boolean;
 };
 
@@ -74,15 +79,33 @@ function FavoritesProvider({
     setFavorites(stations);
   }, []);
 
+  const updateFavoritePrices = useCallback((updates: GasStation[]) => {
+    setFavorites(prev =>
+      prev.map(
+        existing =>
+          updates.find(fresh => fresh.station_id === existing.station_id) ??
+          existing,
+      ),
+    );
+  }, []);
+
   const value = useMemo(
     () => ({
       favorites,
       isFavorite,
       toggleFavorite,
       reorderFavorites,
+      updateFavoritePrices,
       isReady: loaded,
     }),
-    [favorites, isFavorite, toggleFavorite, reorderFavorites, loaded],
+    [
+      favorites,
+      isFavorite,
+      toggleFavorite,
+      reorderFavorites,
+      updateFavoritePrices,
+      loaded,
+    ],
   );
 
   return (

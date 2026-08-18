@@ -108,6 +108,44 @@ export type EvStationSearchResponse = {
   lon: number;
 };
 
+export type GasPriceForecast = {
+  lat: number;
+  lon: number;
+  today_average_price: number | null;
+  forecasted_price: number | null;
+  // Pre-formatted like GasBuddy's own per-station prices (e.g. "$3.19" in
+  // the US, "167.7¢" in Canada) — use these for display rather than
+  // formatting today_average_price/forecasted_price directly, since the
+  // raw numbers alone don't say which regional convention applies.
+  today_average_formatted: string | null;
+  forecasted_price_formatted: string | null;
+  // forecasted_price - today_average_price. The formatted version always
+  // carries an explicit +/- sign, unlike the absolute prices above.
+  price_change: number | null;
+  price_change_formatted: string | null;
+  trend_direction: 'up' | 'down' | 'flat';
+  daily_change_pct: number | null;
+  source: 'statcan' | 'eia' | 'none';
+  source_period_end: string | null;
+  stations_sampled: number;
+  // The spread across nearby stations, not just their average — each end
+  // projected forward with the same daily trend rate as forecasted_price.
+  today_lowest_price: number | null;
+  today_highest_price: number | null;
+  today_lowest_formatted: string | null;
+  today_highest_formatted: string | null;
+  forecasted_lowest_price: number | null;
+  forecasted_highest_price: number | null;
+  forecasted_lowest_formatted: string | null;
+  forecasted_highest_formatted: string | null;
+  // Same day-over-day delta concept as price_change, for each end of the
+  // range.
+  lowest_price_change: number | null;
+  lowest_price_change_formatted: string | null;
+  highest_price_change: number | null;
+  highest_price_change_formatted: string | null;
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     headers: {'Content-Type': 'application/json'},
@@ -182,5 +220,14 @@ export function searchNearestEvStations(
   }
   return request<EvStationSearchResponse>(
     `/ev-stations/search?${queryParts.join('&')}`,
+  );
+}
+
+export function getGasPriceForecast(
+  lat: number,
+  lon: number,
+): Promise<GasPriceForecast> {
+  return request<GasPriceForecast>(
+    `/forecast?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`,
   );
 }

@@ -16,16 +16,19 @@ import HomeScreen, {
   INITIAL_PERSISTED_SEARCH,
   PersistedSearch,
 } from './src/screens/HomeScreen';
+import NotificationsScreen, {
+  INITIAL_PERSISTED_FORECAST,
+  PersistedForecast,
+} from './src/screens/NotificationsScreen';
 import PlaceholderScreen from './src/screens/PlaceholderScreen';
 import SplashScreen from './src/screens/SplashScreen';
 import {FavoritesProvider, useFavorites} from './src/store/FavoritesContext';
 
 const PLACEHOLDER_TITLES: Record<
-  Exclude<TabKey, 'home' | 'favorites' | 'search'>,
+  Exclude<TabKey, 'home' | 'favorites' | 'search' | 'personal'>,
   string
 > = {
   chat: 'Chat',
-  personal: 'Notifications',
 };
 
 function ActiveScreen({
@@ -34,12 +37,16 @@ function ActiveScreen({
   onSearchComplete,
   persistedEvSearch,
   onEvSearchComplete,
+  persistedForecast,
+  onForecastComplete,
 }: {
   activeTab: TabKey;
   persistedSearch: PersistedSearch;
   onSearchComplete: (search: PersistedSearch) => void;
   persistedEvSearch: PersistedEvSearch;
   onEvSearchComplete: (search: PersistedEvSearch) => void;
+  persistedForecast: PersistedForecast;
+  onForecastComplete: (forecast: PersistedForecast) => void;
 }): React.JSX.Element {
   if (activeTab === 'home') {
     return (
@@ -60,6 +67,16 @@ function ActiveScreen({
   if (activeTab === 'favorites') {
     return <FavoritesScreen />;
   }
+  if (activeTab === 'personal') {
+    return (
+      <NotificationsScreen
+        searchLocation={persistedSearch.searchLocation}
+        locationQuery={persistedSearch.query}
+        persistedForecast={persistedForecast}
+        onForecastComplete={onForecastComplete}
+      />
+    );
+  }
   return <PlaceholderScreen title={PLACEHOLDER_TITLES[activeTab]} />;
 }
 
@@ -76,6 +93,9 @@ function AppContent(): React.JSX.Element {
   const [persistedEvSearch, setPersistedEvSearch] = useState<PersistedEvSearch>(
     INITIAL_PERSISTED_EV_SEARCH,
   );
+  const [persistedForecast, setPersistedForecast] = useState<PersistedForecast>(
+    INITIAL_PERSISTED_FORECAST,
+  );
 
   if (!isReady) {
     return <SplashScreen />;
@@ -89,6 +109,8 @@ function AppContent(): React.JSX.Element {
         onSearchComplete={setPersistedSearch}
         persistedEvSearch={persistedEvSearch}
         onEvSearchComplete={setPersistedEvSearch}
+        persistedForecast={persistedForecast}
+        onForecastComplete={setPersistedForecast}
       />
 
       <BottomNavBar activeTab={activeTab} onTabPress={setActiveTab} />
