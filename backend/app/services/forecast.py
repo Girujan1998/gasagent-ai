@@ -7,7 +7,12 @@ from app.services.country_lookup import (
     get_country_lookup_service,
 )
 from app.services.eia_client import EiaService, get_eia_service
-from app.services.gasbuddy_client import GasBuddyService, get_gasbuddy_service
+from app.services.gasbuddy_client import (
+    GASBUDDY_PAGE_SIZE,
+    GasBuddyService,
+    format_price_like,
+    get_gasbuddy_service,
+)
 from app.services.national_trend import NationalTrend
 from app.services.statcan_client import StatCanService, get_statcan_service
 
@@ -17,40 +22,19 @@ from app.services.statcan_client import StatCanService, get_statcan_service
 # moving.
 FLAT_THRESHOLD_PCT = 0.0005  # 0.05%/day
 
-# GasBuddy's own fixed page size — confirmed live that requesting a larger
-# `limit` in a single call doesn't return more results (the GraphQL query
-# behind price_lookup_service has no server-side page-size variable at
-# all; `limit` is purely a client-side slice of one fixed-size page).
-# _fetch_wide_sample below can follow next_cursor across multiple pages,
-# but this is deliberately kept at 1: py-gasbuddy is an unofficial scraper
-# of GasBuddy's internal API (it already has CloudflareBlocked handling
-# for exactly this reason), and every extra page here is an extra request
-# against it — multiplied further by the mobile client's own call
-# frequency (see NotificationsScreen's persisted-forecast caching). One
-# page is the same cost as the rest of the app's GasBuddy usage.
-GASBUDDY_PAGE_SIZE = 20
+# _fetch_wide_sample below can follow next_cursor across multiple pages of
+# GASBUDDY_PAGE_SIZE (see gasbuddy_client.py), but this is deliberately
+# kept at 1: py-gasbuddy is an unofficial scraper of GasBuddy's internal
+# API (it already has CloudflareBlocked handling for exactly this reason),
+# and every extra page here is an extra request against it — multiplied
+# further by the mobile client's own call frequency (see
+# NotificationsScreen's persisted-forecast caching). One page is the same
+# cost as the rest of the app's GasBuddy usage.
 STATIONS_SAMPLE_PAGES = 1
 
 
-def _format_like(sample: str | None, value: float) -> str | None:
-    """Formats `value` using whichever regional convention `sample`
-    (a real formatted_price from one of the sampled stations) used —
-    "$3.19"-style in the US, "167.7¢"-style in Canada — since the raw
-    float alone doesn't say which, and GasBuddy already picked one for
-    real stations in this exact average.
-    """
-    if sample is None:
-        return None
-    stripped = sample.strip()
-    if stripped.startswith("$"):
-        return f"${value:.2f}"
-    if stripped.endswith("¢"):
-        return f"{value:.1f}¢"
-    return f"{value:.2f}"
-
-
 def _format_signed_like(sample: str | None, value: float) -> str | None:
-    """Same regional convention as _format_like, but always shows an
+    """Same regional convention as format_price_like, but always shows an
     explicit +/- sign — for a day-over-day change, where the sign is the
     whole point, rather than an absolute price.
     """
@@ -158,12 +142,12 @@ class ForecastService:
             today_average_price=today_average,
             forecasted_price=forecasted_price,
             today_average_formatted=(
-                _format_like(sample_format, today_average)
+                format_price_like(sample_format, today_average)
                 if today_average is not None
                 else None
             ),
             forecasted_price_formatted=(
-                _format_like(sample_format, forecasted_price)
+                format_price_like(sample_format, forecasted_price)
                 if forecasted_price is not None
                 else None
             ),
@@ -181,24 +165,24 @@ class ForecastService:
             today_lowest_price=today_lowest,
             today_highest_price=today_highest,
             today_lowest_formatted=(
-                _format_like(sample_format, today_lowest)
+                format_price_like(sample_format, today_lowest)
                 if today_lowest is not None
                 else None
             ),
             today_highest_formatted=(
-                _format_like(sample_format, today_highest)
+                format_price_like(sample_format, today_highest)
                 if today_highest is not None
                 else None
             ),
             forecasted_lowest_price=forecasted_lowest,
             forecasted_highest_price=forecasted_highest,
             forecasted_lowest_formatted=(
-                _format_like(sample_format, forecasted_lowest)
+                format_price_like(sample_format, forecasted_lowest)
                 if forecasted_lowest is not None
                 else None
             ),
             forecasted_highest_formatted=(
-                _format_like(sample_format, forecasted_highest)
+                format_price_like(sample_format, forecasted_highest)
                 if forecasted_highest is not None
                 else None
             ),

@@ -186,3 +186,29 @@ class EvStationSearchResponse(BaseModel):
     # used) — same purpose as StationSearchResponse.lat/lon.
     lat: float
     lon: float
+
+
+class ChatMessage(BaseModel):
+    role: str  # "user" | "assistant"
+    content: str
+
+
+class ChatLocation(BaseModel):
+    lat: float
+    lon: float
+
+
+class ChatRequest(BaseModel):
+    # The whole conversation so far, oldest first — the client resends it
+    # in full on every message since this scaffold's chat agent has no
+    # server-side session/memory of its own yet.
+    messages: list[ChatMessage]
+    # The user's current location, if the mobile client has one (freshly
+    # shared GPS, or a fallback from the Gas tab's last search) — lets the
+    # chat agent's station-lookup tool answer "near me" questions without
+    # the model guessing coordinates. None when the client has neither.
+    location: ChatLocation | None = None
+
+
+class ChatResponse(BaseModel):
+    message: ChatMessage

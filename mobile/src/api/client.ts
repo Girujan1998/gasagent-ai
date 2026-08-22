@@ -146,6 +146,15 @@ export type GasPriceForecast = {
   highest_price_change_formatted: string | null;
 };
 
+export type ChatMessage = {
+  role: 'user' | 'assistant';
+  content: string;
+};
+
+export type ChatCompletionResponse = {
+  message: ChatMessage;
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     headers: {'Content-Type': 'application/json'},
@@ -230,4 +239,19 @@ export function getGasPriceForecast(
   return request<GasPriceForecast>(
     `/forecast?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`,
   );
+}
+
+// Sends the whole conversation so far, oldest first — the backend's chat
+// agent has no server-side memory of its own yet, so each request repeats
+// the full history rather than just the newest message. `location`, when
+// given, lets the agent's station-lookup tool answer "near me" questions
+// without the model having to guess coordinates.
+export function sendChatMessage(
+  messages: ChatMessage[],
+  location?: {lat: number; lon: number} | null,
+): Promise<ChatCompletionResponse> {
+  return request<ChatCompletionResponse>('/chat', {
+    method: 'POST',
+    body: JSON.stringify({messages, location: location ?? undefined}),
+  });
 }

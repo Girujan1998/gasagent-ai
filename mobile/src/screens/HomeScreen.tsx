@@ -44,9 +44,11 @@ const NO_MATCHING_BRANDS_MESSAGE =
   'No stations match the selected brand filters.';
 
 // The part of a search worth surviving a tab switch: the location searched
-// and its first page of results. Deliberately excludes anything loaded via
+// and its first page of results (deliberately excludes anything loaded via
 // "load more" — leaving Home and coming back should show the first page
-// again, not everything the user had scrolled through.
+// again, not everything the user had scrolled through), plus the sort order
+// and filter selections, which survive a tab switch independently of any
+// search.
 export type PersistedSearch = {
   hasSearched: boolean;
   query: LocationQuery | null;
@@ -54,6 +56,10 @@ export type PersistedSearch = {
   nextCursor: string | null;
   searchLocation: {lat: number; lon: number} | null;
   error: string | null;
+  sortBy: SortOption;
+  primaryFuelKey: FuelKey;
+  secondaryFuelKey: FuelKey;
+  selectedBrandKeys: Set<string> | null;
 };
 
 export const INITIAL_PERSISTED_SEARCH: PersistedSearch = {
@@ -63,11 +69,23 @@ export const INITIAL_PERSISTED_SEARCH: PersistedSearch = {
   nextCursor: null,
   searchLocation: null,
   error: null,
+  sortBy: 'distance',
+  primaryFuelKey: DEFAULT_PRIMARY_FUEL_KEY,
+  secondaryFuelKey: DEFAULT_SECONDARY_FUEL_KEY,
+  selectedBrandKeys: null,
 };
 
 type Props = {
   persistedSearch: PersistedSearch;
-  onSearchComplete: (search: PersistedSearch) => void;
+  // Accepts a functional update (like React's own setState) so a sort/
+  // filter change can patch just its own field on top of whatever was last
+  // persisted, without needing to know or restate the rest — in particular
+  // without resending `stations`/`nextCursor`, which must stay exactly what
+  // the last completed search/refresh set them to, not whatever "load more"
+  // has since grown them to locally (see the PersistedSearch comment above).
+  onSearchComplete: (
+    search: PersistedSearch | ((prev: PersistedSearch) => PersistedSearch),
+  ) => void;
 };
 
 function HomeScreen({
@@ -87,20 +105,21 @@ function HomeScreen({
     persistedSearch.error,
   );
   const [loadingMore, setLoadingMore] = useState(false);
-  // Not persisted across tab switches — same treatment as pagination
-  // below, a view preference rather than search result data.
-  const [sortBy, setSortBy] = useState<SortOption>('distance');
+  const [sortBy, setSortBy] = useState<SortOption>(persistedSearch.sortBy);
+  // View mode (list/map) is deliberately not persisted — a display
+  // preference rather than a way of narrowing/ordering results, unlike
+  // sort and filter below.
   const [viewMode, setViewMode] = useState<ViewMode>('list');
   const [primaryFuelKey, setPrimaryFuelKey] = useState<FuelKey>(
-    DEFAULT_PRIMARY_FUEL_KEY,
+    persistedSearch.primaryFuelKey,
   );
   const [secondaryFuelKey, setSecondaryFuelKey] = useState<FuelKey>(
-    DEFAULT_SECONDARY_FUEL_KEY,
+    persistedSearch.secondaryFuelKey,
   );
   // null = no brand filter applied (show everything, including brands
   // discovered later via "load more"); a Set is a strict allowlist.
   const [selectedBrandKeys, setSelectedBrandKeys] =
-    useState<Set<string> | null>(null);
+    useState<Set<string> | null>(persistedSearch.selectedBrandKeys);
 
   const brandOptions = useMemo(
     () => brandOptionsFromStations(stations),
@@ -194,14 +213,15 @@ function HomeScreen({
       setStations(response.results);
       nextCursorRef.current = response.next_cursor;
       searchLocationRef.current = searchLocation;
-      onSearchComplete({
+      onSearchComplete(prev => ({
+        ...prev,
         hasSearched: true,
         query: locationQuery,
         stations: response.results,
         nextCursor: response.next_cursor,
         searchLocation,
         error: null,
-      });
+      }));
     } catch (err) {
       // A failed refresh deliberately leaves the error state alone too —
       // the existing (still valid) results stay on screen, uninterrupted,
@@ -211,14 +231,15 @@ function HomeScreen({
         const message = err instanceof Error ? err.message : 'Search failed.';
         setSearchError(message);
         setStations([]);
-        onSearchComplete({
+        onSearchComplete(prev => ({
+          ...prev,
           hasSearched: true,
           query: locationQuery,
           stations: [],
           nextCursor: null,
           searchLocation: null,
           error: message,
-        });
+        }));
       }
     } finally {
       if (isRefresh) {
@@ -278,6 +299,29 @@ function HomeScreen({
     }
   };
 
+  // Sort and filter each persist immediately on their own change — not
+  // just at search time — so they survive a tab switch even if the user
+  // never runs another search after adjusting them.
+  const handleSortByChange = (value: SortOption) => {
+    setSortBy(value);
+    onSearchComplete(prev => ({...prev, sortBy: value}));
+  };
+
+  const handlePrimaryFuelKeyChange = (value: FuelKey) => {
+    setPrimaryFuelKey(value);
+    onSearchComplete(prev => ({...prev, primaryFuelKey: value}));
+  };
+
+  const handleSecondaryFuelKeyChange = (value: FuelKey) => {
+    setSecondaryFuelKey(value);
+    onSearchComplete(prev => ({...prev, secondaryFuelKey: value}));
+  };
+
+  const handleBrandFiltersApply = (value: Set<string> | null) => {
+    setSelectedBrandKeys(value);
+    onSearchComplete(prev => ({...prev, selectedBrandKeys: value}));
+  };
+
   return (
     <View style={styles.container}>
       <LocationSearchBar
@@ -292,7 +336,7 @@ function HomeScreen({
               <View style={styles.leftControls}>
                 <SortControl
                   value={sortBy}
-                  onChange={setSortBy}
+                  onChange={handleSortByChange}
                   primaryFuelLabel={FUEL_LABELS[primaryFuelKey]}
                   secondaryFuelLabel={FUEL_LABELS[secondaryFuelKey]}
                 />
@@ -301,11 +345,11 @@ function HomeScreen({
               <FilterControl
                 primaryFuelKey={primaryFuelKey}
                 secondaryFuelKey={secondaryFuelKey}
-                onChangePrimaryFuelKey={setPrimaryFuelKey}
-                onChangeSecondaryFuelKey={setSecondaryFuelKey}
+                onChangePrimaryFuelKey={handlePrimaryFuelKeyChange}
+                onChangeSecondaryFuelKey={handleSecondaryFuelKeyChange}
                 brandOptions={brandOptions}
                 selectedBrandKeys={selectedBrandKeys}
-                onApplyBrandFilters={setSelectedBrandKeys}
+                onApplyBrandFilters={handleBrandFiltersApply}
               />
             </View>
           )}

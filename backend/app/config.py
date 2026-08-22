@@ -12,6 +12,12 @@ class Settings(BaseSettings):
     nrel_api_key: str = ""
     ocm_api_key: str = ""
     eia_api_key: str = ""
+    groq_api_key: str = ""
+    # Kept configurable rather than hardcoded — Groq's available models
+    # change over time (confirmed live: llama-3.3-70b-versatile, this
+    # setting's original default, is no longer offered), and swapping one
+    # shouldn't need a code change.
+    groq_model: str = "openai/gpt-oss-120b"
 
 
 @lru_cache

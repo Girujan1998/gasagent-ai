@@ -6,6 +6,32 @@ from py_gasbuddy import GasBuddy
 from app.models.schemas import FuelPrice, GasStation
 from app.services.geocoding import geocode
 
+# GasBuddy's own fixed page size — confirmed live that requesting a larger
+# `limit` in a single call doesn't return more results (the GraphQL query
+# behind price_lookup_service has no server-side page-size variable at
+# all; `limit` is purely a client-side slice of one fixed-size page). A
+# caller that wants more must follow `next_cursor` across multiple calls.
+GASBUDDY_PAGE_SIZE = 20
+
+
+def format_price_like(sample: str | None, value: float) -> str | None:
+    """Formats `value` using whichever regional convention `sample`
+    (a real formatted_price from one of the sampled stations) used —
+    "$3.19"-style in the US, "167.7¢"-style in Canada — since the raw
+    float alone doesn't say which, and GasBuddy already picked one for
+    real stations in this exact average. Shared by forecast.py (today's
+    average/lowest/highest price) and chat_client.py (a location's
+    average price for a fuel grade).
+    """
+    if sample is None:
+        return None
+    stripped = sample.strip()
+    if stripped.startswith("$"):
+        return f"${value:.2f}"
+    if stripped.endswith("¢"):
+        return f"{value:.1f}¢"
+    return f"{value:.2f}"
+
 
 @dataclass
 class StationSearchResult:

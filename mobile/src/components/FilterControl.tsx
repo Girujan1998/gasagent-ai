@@ -185,7 +185,9 @@ function FilterControl({
 
             <Text style={styles.sheetTitle}>Filters</Text>
 
-            <ScrollView showsVerticalScrollIndicator={false}>
+            <ScrollView
+              style={styles.scrollArea}
+              showsVerticalScrollIndicator={false}>
               <View style={styles.sectionHeaderRow}>
                 <Text style={styles.sectionLabel}>Price 1 fuel grade</Text>
               </View>
@@ -230,33 +232,37 @@ function FilterControl({
               {brandOptions.length === 0 ? (
                 <Text style={styles.emptyText}>No brands to filter yet.</Text>
               ) : (
-                <>
-                  {brandOptions.map(option => {
-                    const selected = draftSelectedBrandKeys.has(option.key);
-                    return (
-                      <TouchableOpacity
-                        key={option.key}
-                        style={styles.optionRow}
-                        onPress={() => handleToggleBrandDraft(option.key)}
-                        accessibilityLabel={`${selected ? 'Hide' : 'Show'} ${
-                          option.label
-                        }`}>
-                        <Text style={styles.optionText}>{option.label}</Text>
-                        {selected && <Text style={styles.checkmark}>✓</Text>}
-                      </TouchableOpacity>
-                    );
-                  })}
-                  <TouchableOpacity
-                    style={styles.submitButton}
-                    onPress={handleSubmitBrands}
-                    accessibilityLabel="Apply brand filters">
-                    <Text style={styles.submitButtonText}>
-                      Apply Brand Filters
-                    </Text>
-                  </TouchableOpacity>
-                </>
+                brandOptions.map(option => {
+                  const selected = draftSelectedBrandKeys.has(option.key);
+                  return (
+                    <TouchableOpacity
+                      key={option.key}
+                      style={styles.optionRow}
+                      onPress={() => handleToggleBrandDraft(option.key)}
+                      accessibilityLabel={`${selected ? 'Hide' : 'Show'} ${
+                        option.label
+                      }`}>
+                      <Text style={styles.optionText}>{option.label}</Text>
+                      {selected && <Text style={styles.checkmark}>✓</Text>}
+                    </TouchableOpacity>
+                  );
+                })
               )}
             </ScrollView>
+
+            {brandOptions.length > 0 && (
+              // Fixed below the ScrollView rather than as its last item, so
+              // it stays visible without the user scrolling the brand list
+              // to find it.
+              <TouchableOpacity
+                style={styles.submitButton}
+                onPress={handleSubmitBrands}
+                accessibilityLabel="Apply brand filters">
+                <Text style={styles.submitButtonText}>
+                  Apply Brand Filters
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
         </TouchableOpacity>
       </Modal>
@@ -320,6 +326,15 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
     marginBottom: 12,
+  },
+  scrollArea: {
+    // No fixed height — hugs its content up to the sheet's own maxHeight,
+    // at which point this flex:1 lets it shrink to the space left over
+    // after the title and the fixed submitButton footer below, so the
+    // footer is always visible without occupying empty space when the
+    // list itself is short.
+    flexGrow: 0,
+    flexShrink: 1,
   },
   sectionHeaderRow: {
     flexDirection: 'row',

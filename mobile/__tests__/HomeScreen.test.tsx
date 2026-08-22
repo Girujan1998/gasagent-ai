@@ -8,6 +8,8 @@ import {act, create, ReactTestRenderer} from 'react-test-renderer';
 import {it, expect, jest} from '@jest/globals';
 import WebView from 'react-native-webview';
 
+import FilterControl from '../src/components/FilterControl';
+import SortControl from '../src/components/SortControl';
 import HomeScreen, {
   INITIAL_PERSISTED_SEARCH,
   PersistedSearch,
@@ -576,8 +578,10 @@ it('restores the first page from persisted state without refetching, dropping an
   ]);
 
   let persisted: PersistedSearch = INITIAL_PERSISTED_SEARCH;
-  const onSearchComplete = (next: PersistedSearch) => {
-    persisted = next;
+  const onSearchComplete = (
+    next: PersistedSearch | ((prev: PersistedSearch) => PersistedSearch),
+  ) => {
+    persisted = typeof next === 'function' ? next(persisted) : next;
   };
 
   let renderer: ReactTestRenderer;
@@ -637,6 +641,104 @@ it('restores the first page from persisted state without refetching, dropping an
   // Unmount so LocationSearchBar's debounced autocomplete timer (queued by
   // the persisted "Chicago" query on this second mount) is cancelled
   // rather than firing later against a subsequent test's fetch mock.
+  await act(async () => {
+    renderer!.unmount();
+  });
+});
+
+it('persists sort order and filter selections immediately, independent of any search', async () => {
+  mockFetchSequence([healthResponse, stationsResponse(['Shell', 'BP'], null)]);
+
+  let persisted: PersistedSearch = INITIAL_PERSISTED_SEARCH;
+  const onSearchComplete = (
+    next: PersistedSearch | ((prev: PersistedSearch) => PersistedSearch),
+  ) => {
+    persisted = typeof next === 'function' ? next(persisted) : next;
+  };
+
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      <FavoritesProvider>
+        <HomeScreen
+          persistedSearch={persisted}
+          onSearchComplete={onSearchComplete}
+        />
+      </FavoritesProvider>,
+    );
+  });
+
+  await search(renderer!, 'Chicago');
+
+  await act(async () => {
+    renderer!.root
+      .findByProps({accessibilityLabel: 'Change sort order'})
+      .props.onPress();
+  });
+  await act(async () => {
+    renderer!.root
+      .findByProps({
+        accessibilityLabel: 'Sort by Price (Regular) and Distance',
+      })
+      .props.onPress();
+  });
+
+  await act(async () => {
+    renderer!.root
+      .findByProps({accessibilityLabel: 'Open filters'})
+      .props.onPress();
+  });
+  await act(async () => {
+    renderer!.root
+      .findByProps({accessibilityLabel: 'Show Midgrade as Price 1'})
+      .props.onPress();
+  });
+  await act(async () => {
+    renderer!.root.findByProps({accessibilityLabel: 'Hide BP'}).props.onPress();
+  });
+  await act(async () => {
+    renderer!.root
+      .findByProps({accessibilityLabel: 'Apply brand filters'})
+      .props.onPress();
+  });
+
+  // Persisted immediately on each change — not deferred until another
+  // search runs.
+  expect(persisted.sortBy).toBe('price1AndDistance');
+  expect(persisted.primaryFuelKey).toBe('midgrade');
+  expect(persisted.selectedBrandKeys).toEqual(new Set(['Shell']));
+
+  // Leaving the Home tab unmounts it; coming back mounts a fresh instance
+  // seeded from persisted state, same as HomeScreen's search results.
+  await act(async () => {
+    renderer!.unmount();
+  });
+  await act(async () => {
+    renderer = create(
+      <FavoritesProvider>
+        <HomeScreen
+          persistedSearch={persisted}
+          onSearchComplete={onSearchComplete}
+        />
+      </FavoritesProvider>,
+    );
+  });
+
+  expect(renderer!.root.findByType(SortControl).props.value).toBe(
+    'price1AndDistance',
+  );
+  const filterProps = renderer!.root.findByType(FilterControl).props;
+  expect(filterProps.primaryFuelKey).toBe('midgrade');
+  expect(filterProps.selectedBrandKeys).toEqual(new Set(['Shell']));
+
+  // The brand filter is also actually applied to the list, not just
+  // restored as an unused selection.
+  expect(
+    renderer!.root
+      .findByType(FlatList)
+      .props.data.map((s: {name: string}) => s.name),
+  ).toEqual(['Shell']);
+
   await act(async () => {
     renderer!.unmount();
   });
