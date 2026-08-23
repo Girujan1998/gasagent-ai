@@ -37,6 +37,10 @@ type Props = {
   // stations near me" can work in Chat without asking for GPS first, the
   // same value already shared with the Notifications tab (see App.tsx).
   gasTabLocation: Location | null;
+  // Same idea for EV questions, but sourced from the EV tab's last search
+  // instead — kept separate from gasTabLocation since the two tabs can be
+  // searched at different places.
+  evTabLocation: Location | null;
 };
 
 function MessageBubble({message}: {message: ChatMessage}): React.JSX.Element {
@@ -60,6 +64,7 @@ function ChatScreen({
   persistedChat,
   onChatComplete,
   gasTabLocation,
+  evTabLocation,
 }: Props): React.JSX.Element {
   const [messages, setMessages] = useState<ChatMessage[]>(
     persistedChat.messages,
@@ -76,10 +81,13 @@ function ChatScreen({
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
 
-  // A fresh GPS fix always wins over the Gas tab's possibly-stale last
+  // A fresh GPS fix always wins over either tab's possibly-stale last
   // search — recomputed on every send so sharing location mid-conversation
-  // takes effect on the very next message.
-  const effectiveLocation = gpsLocation ?? gasTabLocation ?? null;
+  // takes effect on the very next message. Gas and EV questions fall back
+  // to their own tab's last search rather than sharing one fallback, since
+  // the two tabs can be searched at different places.
+  const gasLocation = gpsLocation ?? gasTabLocation ?? null;
+  const evLocation = gpsLocation ?? evTabLocation ?? null;
 
   const handleShareLocation = async () => {
     setLocationError(null);
@@ -121,7 +129,7 @@ function ChatScreen({
     setSending(true);
 
     try {
-      const response = await sendChatMessage(nextMessages, effectiveLocation);
+      const response = await sendChatMessage(nextMessages, gasLocation, evLocation);
       const withReply = [...nextMessages, response.message];
       setMessages(withReply);
       onChatComplete({messages: withReply, error: null});

@@ -203,11 +203,17 @@ class ChatRequest(BaseModel):
     # in full on every message since this scaffold's chat agent has no
     # server-side session/memory of its own yet.
     messages: list[ChatMessage]
-    # The user's current location, if the mobile client has one (freshly
-    # shared GPS, or a fallback from the Gas tab's last search) — lets the
-    # chat agent's station-lookup tool answer "near me" questions without
-    # the model guessing coordinates. None when the client has neither.
-    location: ChatLocation | None = None
+    # The user's current location for gas questions, if the mobile client
+    # has one (freshly shared GPS, or a fallback from the Gas tab's last
+    # search) — lets find_nearby_gas_stations answer "near me" questions
+    # without the model guessing coordinates. None when the client has
+    # neither.
+    gas_location: ChatLocation | None = None
+    # Same idea for EV questions, but falling back to the EV tab's last
+    # search instead of the Gas tab's — kept separate from gas_location
+    # since the two tabs are searched independently and can point at
+    # different places.
+    ev_location: ChatLocation | None = None
 
 
 class ChatResponse(BaseModel):

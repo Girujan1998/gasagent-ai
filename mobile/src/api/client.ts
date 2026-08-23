@@ -243,15 +243,22 @@ export function getGasPriceForecast(
 
 // Sends the whole conversation so far, oldest first — the backend's chat
 // agent has no server-side memory of its own yet, so each request repeats
-// the full history rather than just the newest message. `location`, when
-// given, lets the agent's station-lookup tool answer "near me" questions
-// without the model having to guess coordinates.
+// the full history rather than just the newest message. `gasLocation` and
+// `evLocation`, when given, let the agent's gas-station and EV-charger
+// tools answer "near me" questions without the model having to guess
+// coordinates — kept separate since they can point at different places
+// (each tab's own last search).
 export function sendChatMessage(
   messages: ChatMessage[],
-  location?: {lat: number; lon: number} | null,
+  gasLocation?: {lat: number; lon: number} | null,
+  evLocation?: {lat: number; lon: number} | null,
 ): Promise<ChatCompletionResponse> {
   return request<ChatCompletionResponse>('/chat', {
     method: 'POST',
-    body: JSON.stringify({messages, location: location ?? undefined}),
+    body: JSON.stringify({
+      messages,
+      gas_location: gasLocation ?? undefined,
+      ev_location: evLocation ?? undefined,
+    }),
   });
 }

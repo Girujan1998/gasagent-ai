@@ -86,9 +86,11 @@ async function typeAndSend(renderer: ReactTestRenderer, text: string) {
 function Harness({
   mounted,
   gasTabLocation = null,
+  evTabLocation = null,
 }: {
   mounted: boolean;
   gasTabLocation?: {lat: number; lon: number} | null;
+  evTabLocation?: {lat: number; lon: number} | null;
 }): React.JSX.Element | null {
   const [persistedChat, setPersistedChat] = useState<PersistedChat>(
     INITIAL_PERSISTED_CHAT,
@@ -102,6 +104,7 @@ function Harness({
       persistedChat={persistedChat}
       onChatComplete={setPersistedChat}
       gasTabLocation={gasTabLocation}
+      evTabLocation={evTabLocation}
     />
   );
 }
@@ -114,6 +117,7 @@ it('shows an intro message when there is no conversation yet', async () => {
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={null}
+        evTabLocation={null}
       />,
     );
   });
@@ -129,6 +133,7 @@ it('disables Send until there is text to send', async () => {
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={null}
+        evTabLocation={null}
       />,
     );
   });
@@ -153,6 +158,7 @@ it('sends the message, shows the reply, and clears the input', async () => {
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={null}
+        evTabLocation={null}
       />,
     );
   });
@@ -181,6 +187,7 @@ it('shows a typing indicator while waiting for the reply', async () => {
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={null}
+        evTabLocation={null}
       />,
     );
   });
@@ -216,6 +223,7 @@ it('sends the full conversation history, not just the newest message', async () 
         }}
         onChatComplete={jest.fn()}
         gasTabLocation={null}
+        evTabLocation={null}
       />,
     );
   });
@@ -250,6 +258,7 @@ it('keeps the user message and shows an error when the reply fails, without losi
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={onChatComplete}
         gasTabLocation={null}
+        evTabLocation={null}
       />,
     );
   });
@@ -316,6 +325,7 @@ it('scrolls to the bottom instantly once the list lays out, so a returning tab s
         }}
         onChatComplete={jest.fn()}
         gasTabLocation={null}
+        evTabLocation={null}
       />,
     );
   });
@@ -340,6 +350,7 @@ it('shows the "share your location" banner when neither source is available', as
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={null}
+        evTabLocation={null}
       />,
     );
   });
@@ -361,6 +372,7 @@ it('shows the "using last searched location" banner when only the Gas tab has on
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={{lat: 41.9, lon: -87.6}}
+        evTabLocation={null}
       />,
     );
   });
@@ -380,6 +392,7 @@ it('hides the banner once the user shares a fresh GPS location', async () => {
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={null}
+        evTabLocation={null}
       />,
     );
   });
@@ -406,6 +419,7 @@ it('includes the Gas-tab location in the request body when no GPS fix has been s
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={{lat: 41.9, lon: -87.6}}
+        evTabLocation={null}
       />,
     );
   });
@@ -414,9 +428,38 @@ it('includes the Gas-tab location in the request body when no GPS fix has been s
 
   const init = (fetchMock.mock.calls[0] as unknown[])[1] as RequestInit;
   const body = JSON.parse(init.body as string) as {
-    location?: {lat: number; lon: number};
+    gas_location?: {lat: number; lon: number};
+    ev_location?: {lat: number; lon: number};
   };
-  expect(body.location).toEqual({lat: 41.9, lon: -87.6});
+  expect(body.gas_location).toEqual({lat: 41.9, lon: -87.6});
+  expect(body.ev_location).toBeUndefined();
+});
+
+it('includes the EV-tab location in the request body when no GPS fix has been shared, independently of the Gas tab', async () => {
+  const fetchMock = jest.fn(() => Promise.resolve(chatResponse('ok')));
+  global.fetch = fetchMock as unknown as typeof fetch;
+
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      <ChatScreen
+        persistedChat={INITIAL_PERSISTED_CHAT}
+        onChatComplete={jest.fn()}
+        gasTabLocation={{lat: 41.9, lon: -87.6}}
+        evTabLocation={{lat: 10.0, lon: 20.0}}
+      />,
+    );
+  });
+
+  await typeAndSend(renderer!, 'where can I charge my EV?');
+
+  const init = (fetchMock.mock.calls[0] as unknown[])[1] as RequestInit;
+  const body = JSON.parse(init.body as string) as {
+    gas_location?: {lat: number; lon: number};
+    ev_location?: {lat: number; lon: number};
+  };
+  expect(body.ev_location).toEqual({lat: 10.0, lon: 20.0});
+  expect(body.gas_location).toEqual({lat: 41.9, lon: -87.6});
 });
 
 it('prefers a freshly shared GPS location over the Gas-tab fallback in the request body', async () => {
@@ -431,6 +474,7 @@ it('prefers a freshly shared GPS location over the Gas-tab fallback in the reque
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={{lat: 41.9, lon: -87.6}}
+        evTabLocation={null}
       />,
     );
   });
@@ -445,9 +489,9 @@ it('prefers a freshly shared GPS location over the Gas-tab fallback in the reque
 
   const init = (fetchMock.mock.calls[0] as unknown[])[1] as RequestInit;
   const body = JSON.parse(init.body as string) as {
-    location?: {lat: number; lon: number};
+    gas_location?: {lat: number; lon: number};
   };
-  expect(body.location).toEqual({lat: 1.0, lon: 2.0});
+  expect(body.gas_location).toEqual({lat: 1.0, lon: 2.0});
 });
 
 it('omits location from the request body when neither source is available', async () => {
@@ -461,6 +505,7 @@ it('omits location from the request body when neither source is available', asyn
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={null}
+        evTabLocation={null}
       />,
     );
   });
@@ -468,6 +513,10 @@ it('omits location from the request body when neither source is available', asyn
   await typeAndSend(renderer!, 'Hello');
 
   const init = (fetchMock.mock.calls[0] as unknown[])[1] as RequestInit;
-  const body = JSON.parse(init.body as string) as {location?: unknown};
-  expect(body.location).toBeUndefined();
+  const body = JSON.parse(init.body as string) as {
+    gas_location?: unknown;
+    ev_location?: unknown;
+  };
+  expect(body.gas_location).toBeUndefined();
+  expect(body.ev_location).toBeUndefined();
 });

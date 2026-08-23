@@ -12,11 +12,20 @@ async def send_chat_message(
     service: ChatService = Depends(get_chat_service),
 ) -> ChatResponse:
     """Send the conversation so far to the AI agent and return its reply."""
-    location = (
-        (request.location.lat, request.location.lon) if request.location else None
+    gas_location = (
+        (request.gas_location.lat, request.gas_location.lon)
+        if request.gas_location
+        else None
+    )
+    ev_location = (
+        (request.ev_location.lat, request.ev_location.lon)
+        if request.ev_location
+        else None
     )
     try:
-        reply = await service.send(request.messages, location)
+        reply = await service.send(
+            request.messages, gas_location=gas_location, ev_location=ev_location
+        )
     except ChatError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return ChatResponse(message=reply)

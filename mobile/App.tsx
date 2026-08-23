@@ -84,6 +84,7 @@ function ActiveScreen({
       persistedChat={persistedChat}
       onChatComplete={onChatComplete}
       gasTabLocation={persistedSearch.searchLocation}
+      evTabLocation={persistedEvSearch.searchLocation}
     />
   );
 }

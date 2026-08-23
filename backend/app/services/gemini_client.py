@@ -7,14 +7,18 @@ from fastapi import Depends
 from py_gasbuddy import APIError, CloudflareBlocked, LibraryError, MissingSearchData
 
 from app.config import get_settings
-from app.models.schemas import ChatMessage, GasStation
+from app.models.schemas import ChatMessage, EvStation, GasStation
+from app.services.afdc_client import AfdcError
+from app.services.ev_search import EvSearchService, get_ev_search_service
 from app.services.gasbuddy_client import (
     GASBUDDY_PAGE_SIZE,
     GasBuddyService,
     format_price_like,
     get_gasbuddy_service,
 )
-from app.services.geocoding import GeocodingError
+from app.services.forecast import ForecastService, get_forecast_service
+from app.services.geo import haversine_miles
+from app.services.geocoding import GeocodingError, geocode
 
 # The classic generateContent REST shape — Google's newer "Interactions
 # API" is now GA and recommended for new work, but it's stateful (keeps
@@ -33,139 +37,652 @@ GEMINI_URL_TEMPLATE = (
 # backed tool had — done in code here too, never left for the model to
 # judge by reading a raw station list itself.
 FIND_STATIONS_TOOL: dict[str, Any] = {
-    "functionDeclarations": [
-        {
-            "name": "find_nearby_gas_stations",
-            "description": (
-                "Look up real, current gas stations and their live fuel "
-                "prices near a location, using the app's own GasBuddy "
-                "integration. Supports optional filters — one or more "
-                "brands to include, one or more brands to exclude, a "
-                "brand recognition tier (major-chain vs. independent), "
-                "a maximum distance in miles, and/or a fuel grade to "
-                "sort by price — pass only the ones the user actually "
-                "asked for. Call this whenever the user asks about "
-                "nearby gas stations or gas prices — never answer such "
-                "questions from general knowledge or invent station "
-                "names, addresses, or prices; never filter, exclude, "
-                "sort, or rank stations yourself, and never judge "
-                "yourself whether a brand counts as a 'big name' or not "
-                "(always pass brand_tier instead) — the tool does all "
-                "of that for you. Not for EV charging."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "location": {
-                        "type": "string",
-                        "description": (
-                            "A specific place to search near — a city, "
-                            "neighborhood, postal code, or address — "
-                            "ONLY when the user named one explicitly "
-                            "(e.g. 'Toronto', 'near 90210'). Omit this "
-                            "entirely when the user means their own "
-                            "current location ('near me', 'nearby', "
-                            "'around here', or no place mentioned at "
-                            "all) — the backend already knows the "
-                            "user's current location and will use it "
-                            "automatically."
-                        ),
-                    },
-                    "brands": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": (
-                            "One or more specific gas brands or chains "
-                            "to INCLUDE — e.g. ['Shell'] for one brand, "
-                            "['Shell', 'Petro-Canada'] for several. "
-                            "Always pass this as a list, even for a "
-                            "single brand. A station matching ANY listed "
-                            "brand is included. Omit entirely when the "
-                            "user didn't name a specific brand to look "
-                            "for."
-                        ),
-                    },
-                    "exclude_brands": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": (
-                            "One or more specific gas brands or chains "
-                            "to EXCLUDE — e.g. ['Petro-Canada', 'Shell'] "
-                            "for 'gas stations near me that are not "
-                            "Petro-Canada or Shell'. A station matching "
-                            "ANY listed brand here is removed. Use this "
-                            "whenever the user says 'not X', 'excluding "
-                            "X', or 'other than X'. Omit entirely when "
-                            "the user didn't ask to exclude any brand."
-                        ),
-                    },
-                    "max_distance_miles": {
-                        "type": "number",
-                        "description": (
-                            "Only include stations within this many "
-                            "miles of the searched location — ONLY when "
-                            "the user gave an explicit distance or "
-                            "radius ('within 5 miles', 'closer than 2 "
-                            "miles'). Omit entirely when no distance was "
-                            "mentioned."
-                        ),
-                    },
-                    "fuel_grade": {
-                        "type": "string",
-                        "enum": ["regular", "midgrade", "premium", "diesel"],
-                        "description": (
-                            "Pass this whenever the user asks about the "
-                            "cheapest/lowest-priced gas, the average "
-                            "price, or names a specific grade's price "
-                            "('cheapest gas near me', 'average price of "
-                            "Esso nearby', 'lowest premium price'). For "
-                            "a plain 'cheapest gas' with no grade named, "
-                            "use 'regular'. The tool's response then "
-                            "includes an explicit cheapest field (the "
-                            "actual cheapest matching station) and an "
-                            "average_price field, computed for you — "
-                            "answer directly from those fields for a "
-                            "'cheapest' or 'average price' question, "
-                            "never by comparing prices in the stations "
-                            "list yourself. Omit entirely when the user "
-                            "isn't asking about price ranking at all."
-                        ),
-                    },
-                    "brand_tier": {
-                        "type": "string",
-                        "enum": ["major", "lesser_known"],
-                        "description": (
-                            "Pass 'major' when the user asks for a 'big "
-                            "name', 'major', 'well-known', or 'name-"
-                            "brand' station without naming one "
-                            "specifically. Pass 'lesser_known' when the "
-                            "user asks for an independent, local, non-"
-                            "chain, or 'lesser-known' station instead. "
-                            "The tool checks each station against its "
-                            "own list of recognized major chains — you "
-                            "don't need to judge or recall which brands "
-                            "count yourself, and shouldn't guess. Don't "
-                            "combine with brands/exclude_brands — use "
-                            "those instead when the user names one or "
-                            "more specific brands. Omit entirely for a "
-                            "plain search with no brand-tier preference."
-                        ),
-                    },
-                },
-                "required": [],
+    "name": "find_nearby_gas_stations",
+    "description": (
+        "Look up real, current gas stations and their live fuel "
+        "prices near a location, using the app's own GasBuddy "
+        "integration. Supports optional filters — one or more "
+        "brands to include, one or more brands to exclude, a "
+        "brand recognition tier (major-chain vs. independent), "
+        "a maximum distance in miles, and/or a fuel grade to "
+        "sort by price — pass only the ones the user actually "
+        "asked for. Call this whenever the user asks about "
+        "nearby gas stations or gas prices — never answer such "
+        "questions from general knowledge or invent station "
+        "names, addresses, or prices; never filter, exclude, "
+        "sort, or rank stations yourself, and never judge "
+        "yourself whether a brand counts as a 'big name' or not "
+        "(always pass brand_tier instead) — the tool does all "
+        "of that for you. Not for EV charging."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "location": {
+                "type": "string",
+                "description": (
+                    "A specific place to search near — a city, "
+                    "neighborhood, postal code, or address — "
+                    "ONLY when the user named one explicitly "
+                    "(e.g. 'Toronto', 'near 90210'). Omit this "
+                    "entirely when the user means their own "
+                    "current location ('near me', 'nearby', "
+                    "'around here', or no place mentioned at "
+                    "all) — the backend already knows the "
+                    "user's current location and will use it "
+                    "automatically."
+                ),
             },
-        }
-    ]
+            "brands": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "One or more specific gas brands or chains "
+                    "to INCLUDE — e.g. ['Shell'] for one brand, "
+                    "['Shell', 'Petro-Canada'] for several. "
+                    "Always pass this as a list, even for a "
+                    "single brand. A station matching ANY listed "
+                    "brand is included. Omit entirely when the "
+                    "user didn't name a specific brand to look "
+                    "for."
+                ),
+            },
+            "exclude_brands": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "One or more specific gas brands or chains "
+                    "to EXCLUDE — e.g. ['Petro-Canada', 'Shell'] "
+                    "for 'gas stations near me that are not "
+                    "Petro-Canada or Shell'. A station matching "
+                    "ANY listed brand here is removed. Use this "
+                    "whenever the user says 'not X', 'excluding "
+                    "X', or 'other than X'. Omit entirely when "
+                    "the user didn't ask to exclude any brand."
+                ),
+            },
+            "max_distance_miles": {
+                "type": "number",
+                "description": (
+                    "Only include stations within this many "
+                    "miles of the searched location — ONLY when "
+                    "the user gave an explicit distance or "
+                    "radius in miles ('within 5 miles', 'closer "
+                    "than 2 miles'). Use max_distance_km instead "
+                    "when the user gave the radius in "
+                    "kilometres — don't convert it yourself. "
+                    "Omit both when no distance was mentioned."
+                ),
+            },
+            "max_distance_km": {
+                "type": "number",
+                "description": (
+                    "Only include stations within this many "
+                    "kilometres of the searched location — ONLY "
+                    "when the user gave an explicit radius in "
+                    "kilometres ('within 10 km', 'closer than 5 "
+                    "kilometres'). The tool converts this to "
+                    "miles itself — never convert km to miles "
+                    "yourself. Don't set both max_distance_miles "
+                    "and max_distance_km at once."
+                ),
+            },
+            "fuel_grade": {
+                "type": "string",
+                "enum": ["regular", "midgrade", "premium", "diesel"],
+                "description": (
+                    "Pass this whenever the user asks about the "
+                    "cheapest/lowest-priced gas, the average "
+                    "price, or names a specific grade's price "
+                    "('cheapest gas near me', 'average price of "
+                    "Esso nearby', 'lowest premium price'). For "
+                    "a plain 'cheapest gas' with no grade named, "
+                    "use 'regular'. The tool's response then "
+                    "includes an explicit cheapest field (the "
+                    "actual cheapest matching station, with its "
+                    "own price_per_litre/price_unit for use with "
+                    "calculate_fuel_cost) and an average_price "
+                    "field, computed for you — answer directly "
+                    "from those fields for a 'cheapest' or "
+                    "'average price' question, never by "
+                    "comparing prices in the stations list "
+                    "yourself. Omit entirely when the user isn't "
+                    "asking about price ranking at all."
+                ),
+            },
+            "brand_tier": {
+                "type": "string",
+                "enum": ["major", "lesser_known"],
+                "description": (
+                    "Pass 'major' when the user asks for a 'big "
+                    "name', 'major', 'well-known', or 'name-"
+                    "brand' station without naming one "
+                    "specifically. Pass 'lesser_known' when the "
+                    "user asks for an independent, local, non-"
+                    "chain, or 'lesser-known' station instead. "
+                    "The tool checks each station against its "
+                    "own list of recognized major chains — you "
+                    "don't need to judge or recall which brands "
+                    "count yourself, and shouldn't guess. Don't "
+                    "combine with brands/exclude_brands — use "
+                    "those instead when the user names one or "
+                    "more specific brands. Omit entirely for a "
+                    "plain search with no brand-tier preference."
+                ),
+            },
+        },
+        "required": [],
+    },
 }
-TOOLS = [FIND_STATIONS_TOOL]
 
-# Bounds worst-case GasBuddy calls per user turn the same way as before:
-# rounds 1-2 offer the tool; round 3 omits `tools` entirely, which should
+# A separate, purely computational tool — none of this touches GasBuddy.
+# Every one of cost/volume/savings/fill-up math is unreliable for the
+# model to do itself (the same reason price sorting and cheapest/
+# average-price were moved into find_nearby_gas_stations earlier), so
+# `mode` selects a deterministic calculation in code instead. Money
+# results are always in dollars, even when the per-litre input was in
+# cents, since a total cost/savings is naturally a dollar figure either
+# way (e.g. "$72.50", never "7250¢").
+CALCULATE_FUEL_COST_TOOL: dict[str, Any] = {
+    "name": "calculate_fuel_cost",
+    "description": (
+        "Does exact fuel-cost arithmetic — total cost for a volume, how "
+        "many litres a budget buys, how much switching prices saves, or "
+        "the cost to fill a partially-full tank. Call this for ANY "
+        "question involving multiplying/dividing a price by a volume or "
+        "budget, or comparing two prices — never do this math yourself, "
+        "you are not reliable at arithmetic. Can be combined with "
+        "find_nearby_gas_stations: call that first to get a real price "
+        "(e.g. its cheapest field), then call this with that price."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "mode": {
+                "type": "string",
+                "enum": [
+                    "cost_for_volume",
+                    "volume_for_budget",
+                    "savings",
+                    "fill_up_cost",
+                ],
+                "description": (
+                    "Which calculation to run. 'cost_for_volume': total "
+                    "cost of a given volume at a given price (needs "
+                    "volume_litres, price_per_litre, price_unit). "
+                    "'volume_for_budget': how many litres a dollar "
+                    "budget buys at a given price (needs budget, "
+                    "price_per_litre, price_unit). 'savings': how much "
+                    "cheaper one price is than another for a given "
+                    "volume (needs volume_litres, and either "
+                    "compare_price_per_litre or price_difference "
+                    "alongside price_per_litre/price_unit). "
+                    "'fill_up_cost': cost to fill a tank from its "
+                    "current level (needs tank_capacity_litres, "
+                    "current_fill_percent, price_per_litre, price_unit)."
+                ),
+            },
+            "volume_litres": {
+                "type": "number",
+                "description": (
+                    "The volume in litres — for 'cost_for_volume' and "
+                    "'savings'. Omit for the other modes."
+                ),
+            },
+            "price_per_litre": {
+                "type": "number",
+                "description": (
+                    "The price per litre to use. Required alongside "
+                    "price_unit for every mode except 'volume_for_"
+                    "budget' with a plain price, where it's still "
+                    "required. When relaying a price the user typed "
+                    "themselves (e.g. '$1.45/L'), use price_unit: "
+                    "'dollars'. When relaying a price from a "
+                    "find_nearby_gas_stations result (its cheapest."
+                    "price_per_litre or average_price fields), use "
+                    "that same result's own price_unit field directly "
+                    "— never convert or guess it yourself."
+                ),
+            },
+            "price_unit": {
+                "type": "string",
+                "enum": ["dollars", "cents"],
+                "description": (
+                    "The unit price_per_litre/compare_price_per_litre/"
+                    "price_difference are given in. Required whenever "
+                    "any of those are set."
+                ),
+            },
+            "budget": {
+                "type": "number",
+                "description": (
+                    "The total amount to spend, in dollars — for "
+                    "'volume_for_budget' (e.g. 'if I spend $60'). "
+                    "Always dollars, never cents."
+                ),
+            },
+            "compare_price_per_litre": {
+                "type": "number",
+                "description": (
+                    "A second absolute price per litre, in the same "
+                    "price_unit as price_per_litre — for 'savings' when "
+                    "the user gave two specific prices ('$1.40 instead "
+                    "of $1.47'). Use price_difference instead when the "
+                    "user gave a direct difference instead of two "
+                    "prices."
+                ),
+            },
+            "price_difference": {
+                "type": "number",
+                "description": (
+                    "A direct price-per-litre difference (not two "
+                    "absolute prices) — for 'savings' when the user "
+                    "says something is cheaper/more expensive by a "
+                    "specific amount ('gas is 6 cents cheaper'). Use "
+                    "compare_price_per_litre instead when the user gave "
+                    "two absolute prices instead of a difference."
+                ),
+            },
+            "tank_capacity_litres": {
+                "type": "number",
+                "description": (
+                    "The tank's total capacity in litres — for "
+                    "'fill_up_cost'."
+                ),
+            },
+            "current_fill_percent": {
+                "type": "number",
+                "description": (
+                    "How full the tank currently is, 0-100 — for "
+                    "'fill_up_cost' (e.g. '25% full' → 25). The tool "
+                    "computes the litres actually needed to fill it "
+                    "itself — never compute that yourself."
+                ),
+            },
+        },
+        "required": ["mode"],
+    },
+}
+
+# Reuses the app's existing EV backend (EvSearchService, already powering
+# the EV tab) rather than adding new EV data-fetching logic — filtering
+# below happens entirely in code (mirroring find_nearby_gas_stations'
+# brands/exclude_brands/fuel_grade), never left for the model to judge by
+# reading a raw station list itself.
+FIND_EV_CHARGERS_TOOL: dict[str, Any] = {
+    "name": "find_nearby_ev_chargers",
+    "description": (
+        "Look up real, current EV charging stations near a location, "
+        "using the app's own EV charging data (NREL AFDC + Open Charge "
+        "Map). Supports optional filters — networks to include/exclude, "
+        "connector types, charger levels, and min/max/exact thresholds "
+        "for total charger count, power (kW), voltage, and amperage — "
+        "plus sort_by/sort_order for ranking questions ('highest "
+        "voltage', 'lowest kW'). Pass only what the user actually asked "
+        "for. Call this whenever the user asks about nearby EV charging "
+        "stations, where to charge, or what charger types/specs are "
+        "available nearby — never answer such questions from general "
+        "knowledge or invent station names or addresses; never filter, "
+        "rank, or judge stations yourself — the tool does all of that "
+        "for you (see the returned top_match/sorted_by/"
+        "connector_types_available fields). Not for gas stations or gas "
+        "prices."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "location": {
+                "type": "string",
+                "description": (
+                    "A specific place to search near — a city, "
+                    "neighborhood, postal code, or address — ONLY when "
+                    "the user named one explicitly (e.g. 'Toronto', "
+                    "'near 90210'). Omit this entirely when the user "
+                    "means their own current location ('near me', "
+                    "'nearby', 'around here', or no place mentioned at "
+                    "all) — the backend already knows the user's "
+                    "current location and will use it automatically."
+                ),
+            },
+            "max_distance_km": {
+                "type": "number",
+                "description": (
+                    "Only include charging stations within this many "
+                    "kilometres of the searched location — ONLY when "
+                    "the user gave an explicit distance or radius "
+                    "('within 10 km', 'closer than 5 kilometres'). "
+                    "Omit entirely when no distance was mentioned; the "
+                    "tool then uses a sensible wide default radius."
+                ),
+            },
+            "networks": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "One or more specific EV charging networks/operators "
+                    "to INCLUDE — e.g. ['ChargePoint'], or ['ChargePoint', "
+                    "'FLO'] for several. Always pass this as a list, even "
+                    "for a single network. A station matching ANY listed "
+                    "network is included. Omit entirely when the user "
+                    "didn't name a specific network."
+                ),
+            },
+            "exclude_networks": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "One or more specific EV charging networks/operators "
+                    "to EXCLUDE — e.g. ['Tesla'] for 'EV chargers near me "
+                    "that aren't Tesla'. A station matching ANY listed "
+                    "network here is removed. Use this whenever the user "
+                    "says 'not X', 'excluding X', or 'other than X'. "
+                    "Omit entirely when the user didn't ask to exclude "
+                    "any network."
+                ),
+            },
+            "connector_types": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "One or more connector types to require — e.g. "
+                    "'CCS', 'CHAdeMO', 'Tesla'/'NACS', 'J1772', "
+                    "'NEMA 14-50'. Always pass as a list, even for one "
+                    "type. A station matching ANY listed connector is "
+                    "included. Pass the term the user used (e.g. 'CCS') "
+                    "as-is — the tool normalizes it itself, never "
+                    "translate or guess a code yourself. Omit entirely "
+                    "when the user didn't name a connector type."
+                ),
+            },
+            "charger_levels": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": ["level1", "level2", "dc_fast"],
+                },
+                "description": (
+                    "One or more charger levels to require — 'level1' "
+                    "(slow, standard household outlet), 'level2' (the "
+                    "common public/home charger speed), 'dc_fast' (rapid "
+                    "charging, sometimes called 'fast charging' or "
+                    "'Superchargers'). A station matching ANY listed "
+                    "level is included. Omit entirely when the user "
+                    "didn't ask for a specific charger level."
+                ),
+            },
+            "chargers_min": {
+                "type": "number",
+                "description": (
+                    "Only include stations with AT LEAST this many total "
+                    "charging plugs (all levels combined) — 'a location "
+                    "with 2 chargers' → 2, 'more than 2 chargers' → 3. "
+                    "Omit entirely when the user didn't ask about how "
+                    "many chargers are at a location."
+                ),
+            },
+            "chargers_max": {
+                "type": "number",
+                "description": "Only include stations with AT MOST this many total charging plugs.",
+            },
+            "chargers_equals": {
+                "type": "number",
+                "description": (
+                    "Only include stations with EXACTLY this many total "
+                    "charging plugs — use this, not chargers_min, when "
+                    "the user asks for an exact count ('a station with "
+                    "exactly 4 chargers')."
+                ),
+            },
+            "power_kw_min": {
+                "type": "number",
+                "description": (
+                    "Only include stations with a connector rated at "
+                    "least this many kW — e.g. 'chargers with at least "
+                    "150kW' or 'more than 100kW' (round up to the next "
+                    "whole kW for 'more than'). Only some stations report "
+                    "this level of detail (mostly Open Charge Map-sourced "
+                    "ones); stations without it are correctly excluded, "
+                    "not a bug — say so if the user seems surprised by a "
+                    "short result. Omit entirely when the user didn't ask "
+                    "about charging power/speed in kW."
+                ),
+            },
+            "power_kw_max": {
+                "type": "number",
+                "description": (
+                    "Only include stations with a connector rated at most "
+                    "this many kW. Same data-availability caveat as "
+                    "power_kw_min."
+                ),
+            },
+            "power_kw_equals": {
+                "type": "number",
+                "description": (
+                    "Only include stations with a connector rated at "
+                    "EXACTLY this many kW. Same data-availability caveat "
+                    "as power_kw_min."
+                ),
+            },
+            "voltage_min": {
+                "type": "number",
+                "description": (
+                    "Only include stations with a connector rated at "
+                    "least this many volts. Same data-availability caveat "
+                    "as power_kw_min. Omit entirely when the user didn't "
+                    "ask about voltage."
+                ),
+            },
+            "voltage_max": {
+                "type": "number",
+                "description": "Only include stations with a connector rated at most this many volts.",
+            },
+            "voltage_equals": {
+                "type": "number",
+                "description": "Only include stations with a connector rated at EXACTLY this many volts.",
+            },
+            "amperage_min": {
+                "type": "number",
+                "description": (
+                    "Only include stations with a connector rated at "
+                    "least this many amps. Same data-availability caveat "
+                    "as power_kw_min. Omit entirely when the user didn't "
+                    "ask about amperage."
+                ),
+            },
+            "amperage_max": {
+                "type": "number",
+                "description": "Only include stations with a connector rated at most this many amps.",
+            },
+            "amperage_equals": {
+                "type": "number",
+                "description": "Only include stations with a connector rated at EXACTLY this many amps.",
+            },
+            "sort_by": {
+                "type": "string",
+                "enum": ["chargers", "power_kw", "voltage", "amperage"],
+                "description": (
+                    "Pass this whenever the user asks for a ranking — "
+                    "'the highest voltage charger near me', 'lowest kW "
+                    "charger nearby', 'the station with the most "
+                    "chargers'. Always pair with sort_order. The tool "
+                    "sorts and picks the answer for you (top_match field) "
+                    "— never rank or compare stations yourself. Omit "
+                    "entirely for a plain search with no ranking asked "
+                    "for."
+                ),
+            },
+            "sort_order": {
+                "type": "string",
+                "enum": ["highest", "lowest"],
+                "description": (
+                    "Required alongside sort_by — 'highest' for 'the "
+                    "highest/most/fastest X', 'lowest' for 'the "
+                    "lowest/least/slowest X'."
+                ),
+            },
+        },
+        "required": [],
+    },
+}
+
+# Only for genuinely combined questions — asking about both gas and EV at
+# once, or specifically wanting the closest gas-station/EV-charger pair.
+# A plain single-type question ("gas stations near me") stays on
+# find_nearby_gas_stations/find_nearby_ev_chargers — this tool is not a
+# general-purpose replacement for either.
+FIND_GAS_AND_EV_TOOL: dict[str, Any] = {
+    "name": "find_nearby_gas_and_ev_stations",
+    "description": (
+        "Search for BOTH gas stations and EV charging stations near a "
+        "location at once, and find the closest gas-station/EV-charger "
+        "PAIR — the specific gas station and specific EV charger that "
+        "are nearest to EACH OTHER (by real distance between them, "
+        "computed in code, not from the user). Use this ONLY for "
+        "genuinely combined questions: 'find a gas station and EV "
+        "charger closest to each other', 'is there gas and EV charging "
+        "near me', 'closest Shell and ChargePoint to each other'. Do "
+        "NOT use this for a plain single-type question ('gas stations "
+        "near me', 'EV chargers near me') — use find_nearby_gas_stations "
+        "or find_nearby_ev_chargers for those instead, since this tool "
+        "costs more tokens by searching and returning both at once. "
+        "Supports the same brands/exclude_brands (gas) and "
+        "networks/exclude_networks (EV) filters as those two tools — "
+        "pass only what the user actually asked for."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "location": {
+                "type": "string",
+                "description": (
+                    "A specific place to search near — a city, "
+                    "neighborhood, postal code, or address — ONLY when "
+                    "the user named one explicitly. Omit this entirely "
+                    "when the user means their own current location "
+                    "('near me', 'nearby', or no place mentioned at all) "
+                    "— the backend already knows the user's current "
+                    "location and will use it automatically."
+                ),
+            },
+            "max_distance_miles": {
+                "type": "number",
+                "description": (
+                    "Only include stations within this many miles of the "
+                    "searched location — ONLY when the user gave an "
+                    "explicit distance in miles. Use max_distance_km "
+                    "instead for kilometres — don't convert it yourself."
+                ),
+            },
+            "max_distance_km": {
+                "type": "number",
+                "description": (
+                    "Only include stations within this many kilometres "
+                    "of the searched location. The tool converts this to "
+                    "miles itself — never convert km to miles yourself. "
+                    "Don't set both max_distance_miles and "
+                    "max_distance_km at once."
+                ),
+            },
+            "brands": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "One or more gas brands to INCLUDE, e.g. ['Shell']. "
+                    "Always pass as a list. Omit entirely when the user "
+                    "didn't name a gas brand."
+                ),
+            },
+            "exclude_brands": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "One or more gas brands to EXCLUDE. Omit entirely when not asked for.",
+            },
+            "networks": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "One or more EV charging networks to INCLUDE, e.g. "
+                    "['ChargePoint']. Always pass as a list. Omit "
+                    "entirely when the user didn't name a network."
+                ),
+            },
+            "exclude_networks": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "One or more EV networks to EXCLUDE. Omit entirely when not asked for.",
+            },
+        },
+        "required": [],
+    },
+}
+
+# Deliberately has no day-count/date param at all — this projects ONE day
+# (tomorrow) from today's live GasBuddy average and a national trend rate
+# (see ForecastService in forecast.py); there's no multi-day series
+# anywhere behind it, so there's nothing further-out to ask this tool for.
+GET_GAS_PRICE_FORECAST_TOOL: dict[str, Any] = {
+    "name": "get_gas_price_forecast",
+    "description": (
+        "Get TOMORROW's projected local gas price — today's live "
+        "average, tomorrow's forecasted average/lowest/highest, "
+        "whether the price is trending up or down, and the price "
+        "difference between today and tomorrow (for both the average "
+        "and the lowest/highest). Covers ONLY the next day — there is "
+        "no way to forecast any day beyond tomorrow (not next week, not "
+        "a specific future date); if the user asks for that, say only "
+        "a next-day forecast is available rather than guessing or "
+        "inventing one. Call this whenever the user asks about future "
+        "gas prices, whether prices are going up or down, or a "
+        "tomorrow/next-day price — never estimate this yourself. Not "
+        "for today's current prices (use find_nearby_gas_stations for "
+        "that)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "location": {
+                "type": "string",
+                "description": (
+                    "A specific place to forecast for — a city, "
+                    "neighborhood, postal code, or address — ONLY when "
+                    "the user named one explicitly. Omit this entirely "
+                    "when the user means their own current location "
+                    "('near me', 'my area', or no place mentioned at "
+                    "all) — the backend already knows the user's "
+                    "current location and will use it automatically."
+                ),
+            },
+        },
+        "required": [],
+    },
+}
+
+# All five declarations live under one Gemini "Tool" entry — safer than
+# separate Tool objects, which some Gemini API versions don't support
+# alongside each other when functionDeclarations are involved.
+TOOLS = [
+    {
+        "functionDeclarations": [
+            FIND_STATIONS_TOOL,
+            CALCULATE_FUEL_COST_TOOL,
+            FIND_EV_CHARGERS_TOOL,
+            FIND_GAS_AND_EV_TOOL,
+            GET_GAS_PRICE_FORECAST_TOOL,
+        ]
+    }
+]
+
+# Rounds 1-3 offer tools; round 4 omits `tools` entirely, which should
 # make it structurally impossible for Gemini to return another
 # functionCall on that round (confirmed live on Groq/OpenAI-compatible
 # APIs for the equivalent case; not yet independently re-confirmed for
-# Gemini specifically).
-MAX_TOOL_ROUNDS = 3
+# Gemini specifically). Raised from 3 to 4 so a question needing two
+# station searches (e.g. comparing two brands' own cheapest prices) plus
+# one calculate_fuel_cost call still has a round left for the final
+# answer — a plain single-search-then-calculate question still finishes
+# in 2 tool rounds as before, so this only raises the ceiling for the
+# rarer multi-brand-comparison case, not the common one.
+MAX_TOOL_ROUNDS = 4
 
 # The pause before fetching a second page of stations (brands/distance
 # lookups only) — py-gasbuddy is an unofficial scraper of GasBuddy's
@@ -180,6 +697,61 @@ SECOND_PAGE_PAUSE_SECONDS = 1.0
 VALID_FUEL_GRADES = {"regular", "midgrade", "premium", "diesel"}
 
 VALID_BRAND_TIERS = {"major", "lesser_known"}
+
+# The codes AFDC and OCM's EvStation.connector_types already use (OCM's raw
+# titles are mapped onto these same codes in ocm_client.py) — common ways a
+# model might phrase a connector request, mapped onto them. Anything not
+# here is passed through uppercased rather than hidden, same fallback
+# mobile's formatConnectorType uses for a code it doesn't recognize.
+EV_CONNECTOR_ALIASES = {
+    "j1772": "J1772",
+    "type1": "J1772",
+    "type 1": "J1772",
+    "chademo": "CHADEMO",
+    "ccs": "J1772COMBO",
+    "j1772combo": "J1772COMBO",
+    "combo": "J1772COMBO",
+    "tesla": "TESLA",
+    "nacs": "TESLA",
+    "nema1450": "NEMA1450",
+    "nema 14-50": "NEMA1450",
+    "nema520": "NEMA520",
+    "nema 5-20": "NEMA520",
+}
+
+# There's no separate raw "level" field on an EvStation — a station's
+# charger level is inferred purely from which of level1_count/level2_count/
+# dc_fast_count is nonzero (see _matches_charger_level below).
+EV_CHARGER_LEVELS = {"level1", "level2", "dc_fast"}
+
+# Fetched instead of the unfiltered default (20) whenever any EV filter is
+# set — filtering the 20 nearest stations down can leave almost nothing
+# even when better matches exist slightly farther out. AFDC/OCM have no
+# cursor pagination to page through (unlike GasBuddy), so widening the
+# single limit= call is all that's needed; MAX_LIMIT in afdc_client.py is
+# 200, so this is well within range.
+EV_FILTERED_FETCH_LIMIT = 100
+
+# The widened fetch above is for finding good matches, not for relaying
+# all of them back to the model — a broad filter can still leave dozens
+# of matches, and every one costs real tokens in the tool response.
+# Capped at the same size GasBuddy's own page naturally caps gas results
+# to (GASBUDDY_PAGE_SIZE), applied after filtering/sorting so the
+# nearest/best matches are always what gets kept.
+EV_MAX_STATIONS_IN_RESPONSE = 20
+
+# find_nearby_gas_and_ev_stations' own EV-side fetch — wider than EV's own
+# unfiltered default (20) since a bigger candidate pool improves
+# closest-pair quality, and safe to widen since AFDC/OCM (unlike
+# GasBuddy) have no rate-limit fragility to worry about.
+GAS_AND_EV_FETCH_LIMIT = 40
+
+# Each side's returned list is capped separately at this size — this
+# tool's payload already embeds two full station lists at once (roughly
+# double either single tool's own token cost), so capping matters more
+# here, not less. Smaller than EV_MAX_STATIONS_IN_RESPONSE since two
+# lists of this size are already comparable to one list at that size.
+GAS_AND_EV_MAX_STATIONS_IN_RESPONSE = 15
 
 # Mirrors mobile/src/utils/brandFilter.ts's WELL_KNOWN_BRANDS — the same
 # recognized-chain list the Gas tab's own brand filter uses. Used by
@@ -228,6 +800,19 @@ NO_LOCATION_MESSAGE = (
     "share their location or name a city, postal code, or address."
 )
 
+# The place the user named couldn't be geocoded — distinct from
+# NO_LOCATION_MESSAGE above (no place was given at all). The app's
+# geocoder only recognizes cities/towns, provinces/states, and postal
+# codes (see geocoding.py) — landmarks, schools, malls, and other points
+# of interest aren't in its index, so this is routine, not a bug.
+LOCATION_NOT_FOUND_MESSAGE = (
+    "That location couldn't be found — the app's location lookup only "
+    "recognizes cities/towns, provinces/states, and postal codes, not "
+    "landmarks or businesses. Ask the user to share their current "
+    "location, name a city or province, give a postal code, or browse "
+    "stations on the map in the Gas or EV tab instead."
+)
+
 # Shown as a normal assistant reply (not an error banner) when the
 # provider itself reports a rate limit (HTTP 429) — routine under a free
 # tier's tight caps, not a real failure, so the user gets an actionable
@@ -246,6 +831,16 @@ SYSTEM_PROMPT = (
     "asterisks for bold/italic. Write in short plain sentences or a "
     "simple list with line breaks and dashes; when listing stations, one "
     "per line (e.g. 'Shell (0.7 mi) — 168.9¢/L') rather than a table.\n\n"
+    "Stay strictly inside this app's domain: real-time gas prices, gas "
+    "stations, fuel-cost calculations, and EV charging stations. "
+    "Refuse everything else, no matter how simple or how well you "
+    "could actually answer it — general knowledge (weather, sports "
+    "results, trivia), writing code, recipes, cover letters or other "
+    "writing help, or any other unrelated topic. When you refuse, say "
+    "briefly and politely that you're built specifically for gas and "
+    "EV charging in this app, without answering the off-topic part "
+    "even partially — don't soften a refusal by giving a short answer "
+    "anyway.\n\n"
     "Always relay every price exactly as the tool gave it to you — same "
     "unit (¢ or $), same number of decimal places, character for "
     "character. Never convert between cents and dollars, and never "
@@ -277,18 +872,101 @@ SYSTEM_PROMPT = (
     "from the tool's cheapest and average_price fields — you are not "
     "reliable at comparing many prices by eye, so never rank, compare, "
     "or average prices yourself.\n\n"
+    "You also have a tool, calculate_fuel_cost, for ANY question "
+    "involving fuel arithmetic — total cost for a volume, litres for a "
+    "budget, savings from a price difference, or the cost to fill a "
+    "partially-full tank. You are not reliable at arithmetic, so never "
+    "multiply/divide a price by a volume or budget yourself, and never "
+    "compute a savings amount yourself — always call this tool instead, "
+    "and relay its result exactly as given. To answer a question that "
+    "needs a real price first (e.g. 'find the cheapest Shell and "
+    "calculate the cost of 60L'), call find_nearby_gas_stations first, "
+    "then pass its cheapest station's price_per_litre and price_unit "
+    "fields directly into calculate_fuel_cost — don't parse, convert, "
+    "or re-type that number yourself. To compare two specific brands' "
+    "own cheapest prices (e.g. 'compare the cheapest Shell and Esso'), "
+    "call find_nearby_gas_stations once per brand (brands: ['Shell'], "
+    "then brands: ['Esso']) before calculating — passing both brands "
+    "in one call only finds one overall cheapest station, not each "
+    "brand's own.\n\n"
+    "You also have a tool, find_nearby_ev_chargers, for EV charging "
+    "questions — real charging stations near a location, optionally "
+    "within a distance in kilometres. Call it whenever the user asks "
+    "about EV charging or where to charge an electric vehicle; never "
+    "answer from general knowledge or invent station names or "
+    "addresses. It supports the same style of filtering as the gas "
+    "tool: networks/exclude_networks to include or exclude specific "
+    "charging networks, connector_types (CCS, CHAdeMO, Tesla/NACS, "
+    "J1772, etc.), charger_levels (level1/level2/dc_fast), and "
+    "min/max/equals thresholds for charger count "
+    "(chargers_min/max/equals) and charging power "
+    "(power_kw/voltage/amperage, each with its own _min/_max/_equals) — "
+    "'at least' → _min, 'at most' → _max, 'more than'/'less than' → "
+    "round to the next _min/_max, 'exactly' → _equals. For ranking "
+    "questions ('highest voltage charger near me', 'lowest kW charger "
+    "nearby', 'the station with the most chargers'), pass sort_by and "
+    "sort_order — the response's top_match field is already the answer, "
+    "and stations is already sorted; never rank or compare values "
+    "yourself. For 'what charger types are near me' or similar "
+    "listing questions, call with no filters and read the response's "
+    "connector_types_available field directly. Only some stations "
+    "report power/voltage/amperage detail; if a power-based filter or "
+    "ranking comes back with few or no results, say so rather than "
+    "treating it as an error. Never filter, sort, count, or judge "
+    "connector specs yourself — pass only what the user actually asked "
+    "for and let the tool do it.\n\n"
+    "For a genuinely COMBINED question — asking about both gas and EV "
+    "charging at once, or specifically wanting the closest gas-station/"
+    "EV-charger PAIR ('find a gas station and EV charger closest to "
+    "each other', 'is there gas and EV charging near me', 'closest "
+    "Shell and ChargePoint to each other') — use "
+    "find_nearby_gas_and_ev_stations instead of the two tools above. Do "
+    "NOT use it for a plain single-type question ('gas stations near "
+    "me', 'EV chargers near me') — that stays on "
+    "find_nearby_gas_stations/find_nearby_ev_chargers, since the "
+    "combined tool costs more tokens by searching and returning both at "
+    "once. It supports the same brands/exclude_brands and "
+    "networks/exclude_networks filters as the two dedicated tools. Its "
+    "response's closest_pair field, when present, is already the "
+    "correct minimum-distance pair — computed from real coordinates in "
+    "code — relay it exactly as given; never estimate, recompute, or "
+    "second-guess that distance yourself. If either gas_lookup_note or "
+    "ev_lookup_note is present, relay that one side's search failed or "
+    "found nothing before answering with whatever the other side did "
+    "find.\n\n"
+    "For future gas prices, use get_gas_price_forecast — it covers "
+    "tomorrow's price, whether it's trending up or down, the price "
+    "difference from today, and tomorrow's lowest/highest price with "
+    "their own differences, all in one call. It forecasts ONLY the next "
+    "day — there is no data for next week, next month, or any specific "
+    "future date beyond tomorrow. If asked about any of those, say "
+    "plainly that only a next-day forecast is available; never guess or "
+    "extrapolate one yourself. Every field in its response is already "
+    "computed (the price itself, the change, and the up/down direction) "
+    "— relay them as-is, never recalculate a difference or percentage "
+    "yourself. If its response's note says a real forecast wasn't "
+    "available for that area, say so honestly rather than presenting a "
+    "'no change' result as an actual prediction. Not for today's "
+    "current prices — use find_nearby_gas_stations for those.\n\n"
     "After the tool responds, base your answer strictly on the stations "
     "it returned — mention only those exact stations, with their real "
     "prices and distances, and never add, guess at, or invent any "
     "others, even if the user seems to expect more results. If the tool "
     "reports no location is available, say so plainly and ask the user "
     "to share their location or name a place. If the tool reports that "
-    "no stations were found, say so plainly rather than guessing or "
-    "inventing a match. If the tool reports an error, apologize briefly "
-    "and suggest trying again shortly, without exposing technical "
-    "details.\n\n"
-    "For anything unrelated to real-time station data, answer from "
-    "general knowledge as usual, or say so if you can't help."
+    "the named location couldn't be found, relay its suggested next "
+    "steps directly (share location, name a city/province, give a "
+    "postal code, or browse the map in the Gas/EV tab) rather than just "
+    "apologizing — this is routine, not a system failure, so don't "
+    "downplay it as 'try again later'. If the tool reports that no "
+    "stations were found, say so plainly rather than guessing or "
+    "inventing a match. If the tool reports any other error, apologize "
+    "briefly and suggest trying again shortly, without exposing "
+    "technical details.\n\n"
+    "If the user asks anything outside gas prices/stations, fuel-cost "
+    "calculations, or EV charging, refuse it plainly as described "
+    "above and redirect back to what you can help with — never answer "
+    "it from general knowledge, even briefly."
 )
 
 
@@ -323,18 +1001,47 @@ def _station_summary(s: GasStation) -> dict[str, Any]:
     }
 
 
-def _normalize_brand_text(value: str) -> str:
+def _ev_station_summary(s: EvStation) -> dict[str, Any]:
+    return {
+        "name": s.name,
+        "network": s.network,
+        "address": s.address,
+        "distance_miles": s.distance_miles,
+        "level1_count": s.level1_count,
+        "level2_count": s.level2_count,
+        "dc_fast_count": s.dc_fast_count,
+        "connector_types": s.connector_types,
+        # OCM-only (see connector_details' own doc comment in schemas.py) —
+        # empty for AFDC-only stations. Included so the model can relay
+        # *why* a station matched a power/voltage/amperage filter, the
+        # same way gas's cheapest/average_price let it relay why a
+        # station is the cheapest.
+        "connector_details": [
+            {
+                "connector_type": d.connector_type,
+                "power_kw": d.power_kw,
+                "voltage": d.voltage,
+                "amps": d.amps,
+            }
+            for d in s.connector_details
+        ],
+    }
+
+
+# Generic enough to reuse for any free-text "close enough, not exact"
+# matching problem — also used for EV network matching below.
+def _normalize_text_for_matching(value: str) -> str:
     return re.sub(r"[-\s]+", " ", value.strip().lower())
 
 
 def _brand_matches(station: GasStation, brand_query: str) -> bool:
-    query = _normalize_brand_text(brand_query)
+    query = _normalize_text_for_matching(brand_query)
     if not query:
         return False
     for candidate in (station.brand, station.name, station.connected_brand):
         if not candidate:
             continue
-        normalized = _normalize_brand_text(candidate)
+        normalized = _normalize_text_for_matching(candidate)
         if query in normalized or normalized in query:
             return True
     return False
@@ -422,13 +1129,16 @@ def _needs_second_page(
     return False
 
 
-def _brand_descriptor(brands: list[str] | None, brand_tier: str | None = None) -> str | None:
-    if brands:
-        if len(brands) == 1:
-            return brands[0]
-        if len(brands) == 2:
-            return f"{brands[0]} or {brands[1]}"
-        return f"{', '.join(brands[:-1])}, or {brands[-1]}"
+# Generic "a, b, or c" list formatter — brand_tier is a gas-only extra
+# (used only by the gas tool's own call sites below); EV network messages
+# just pass a plain list and leave it at its default of None.
+def _list_descriptor(items: list[str] | None, brand_tier: str | None = None) -> str | None:
+    if items:
+        if len(items) == 1:
+            return items[0]
+        if len(items) == 2:
+            return f"{items[0]} or {items[1]}"
+        return f"{', '.join(items[:-1])}, or {items[-1]}"
     if brand_tier == "major":
         return "major-brand"
     if brand_tier == "lesser_known":
@@ -446,12 +1156,12 @@ def _no_match_message(
 ) -> str:
     if not any_nearby:
         return "No gas stations were found near that location at all."
-    descriptor = _brand_descriptor(brands, brand_tier)
+    descriptor = _list_descriptor(brands, brand_tier)
     bits: list[str] = []
     if descriptor:
         bits.append(f"matching {descriptor}")
     if exclude_brands:
-        bits.append(f"excluding {_brand_descriptor(exclude_brands)}")
+        bits.append(f"excluding {_list_descriptor(exclude_brands)}")
     if max_distance_miles is not None:
         bits.append(f"within {max_distance_miles} miles")
     if not bits:
@@ -509,7 +1219,246 @@ def _average_fuel_price(
     return average, format_price_like(sample_format, average)
 
 
-def _coerce_brand_list(value: Any) -> list[str] | None:
+def _network_matches(station: EvStation, network_query: str) -> bool:
+    query = _normalize_text_for_matching(network_query)
+    if not query or not station.network:
+        return False
+    normalized = _normalize_text_for_matching(station.network)
+    return query in normalized or normalized in query
+
+
+def _matches_any_network(station: EvStation, networks: list[str]) -> bool:
+    return any(_network_matches(station, n) for n in networks)
+
+
+def _ev_station_total_chargers(s: EvStation) -> int:
+    return (s.level1_count or 0) + (s.level2_count or 0) + (s.dc_fast_count or 0)
+
+
+def _matches_charger_level(s: EvStation, levels: list[str]) -> bool:
+    counts = {"level1": s.level1_count, "level2": s.level2_count, "dc_fast": s.dc_fast_count}
+    return any(counts.get(level) for level in levels)
+
+
+# A (min, max, equals) triple, used for every numeric EV criterion
+# (chargers/power_kw/voltage/amperage) so none of the functions below need
+# a separate scalar param per operator.
+NumericRange = tuple[float | None, float | None, float | None]
+
+
+def _range_is_set(min_: float | None, max_: float | None, equals: float | None) -> bool:
+    return min_ is not None or max_ is not None or equals is not None
+
+
+def _any_range_set(*ranges: NumericRange) -> bool:
+    return any(_range_is_set(*r) for r in ranges)
+
+
+def _numeric_in_range(value: float | None, range_: NumericRange) -> bool:
+    min_, max_, equals = range_
+    if not _range_is_set(min_, max_, equals):
+        return True
+    if value is None:
+        return False
+    if equals is not None and abs(value - equals) > 1e-6:
+        return False
+    if min_ is not None and value < min_:
+        return False
+    if max_ is not None and value > max_:
+        return False
+    return True
+
+
+def _matches_connector_power_specs(
+    s: EvStation,
+    power_kw_range: NumericRange,
+    voltage_range: NumericRange,
+    amperage_range: NumericRange,
+) -> bool:
+    """True if at least one of the station's connectors satisfies ALL
+    three ranges at once (they describe one physical connector's spec
+    together, not three independent ones). OCM-only data — an AFDC-only
+    station (connector_details == []) never matches once any of the three
+    ranges is set, since there's nothing here to check it against."""
+    for detail in s.connector_details:
+        if not _numeric_in_range(detail.power_kw, power_kw_range):
+            continue
+        if not _numeric_in_range(detail.voltage, voltage_range):
+            continue
+        if not _numeric_in_range(detail.amps, amperage_range):
+            continue
+        return True
+    return False
+
+
+def _filter_ev_stations(
+    stations: list[EvStation],
+    networks: list[str] | None,
+    exclude_networks: list[str] | None,
+    connector_types: list[str] | None,
+    charger_levels: list[str] | None,
+    chargers_range: NumericRange,
+    power_kw_range: NumericRange,
+    voltage_range: NumericRange,
+    amperage_range: NumericRange,
+) -> list[EvStation]:
+    filtered = stations
+    if networks:
+        filtered = [s for s in filtered if _matches_any_network(s, networks)]
+    if exclude_networks:
+        filtered = [s for s in filtered if not _matches_any_network(s, exclude_networks)]
+    if connector_types:
+        wanted = set(connector_types)
+        filtered = [
+            s for s in filtered if wanted & {c.upper() for c in s.connector_types}
+        ]
+    if charger_levels:
+        filtered = [s for s in filtered if _matches_charger_level(s, charger_levels)]
+    if _range_is_set(*chargers_range):
+        filtered = [
+            s for s in filtered if _numeric_in_range(_ev_station_total_chargers(s), chargers_range)
+        ]
+    if _any_range_set(power_kw_range, voltage_range, amperage_range):
+        filtered = [
+            s
+            for s in filtered
+            if _matches_connector_power_specs(s, power_kw_range, voltage_range, amperage_range)
+        ]
+    return filtered
+
+
+def _closest_gas_ev_pair(
+    gas_stations: list[GasStation], ev_stations: list[EvStation]
+) -> tuple[GasStation, EvStation, float] | None:
+    """The gas station and EV charger nearest to EACH OTHER (not to the
+    user) — real Haversine distance between every pair, minimum kept.
+    Stations missing coordinates are skipped rather than crashing (rare,
+    but neither GasBuddy nor AFDC/OCM guarantee lat/lon on every
+    result). None if either list is empty or no pair has coordinates on
+    both sides."""
+    best: tuple[GasStation, EvStation, float] | None = None
+    for gas in gas_stations:
+        if gas.latitude is None or gas.longitude is None:
+            continue
+        for ev in ev_stations:
+            if ev.latitude is None or ev.longitude is None:
+                continue
+            distance = haversine_miles(gas.latitude, gas.longitude, ev.latitude, ev.longitude)
+            if best is None or distance < best[2]:
+                best = (gas, ev, distance)
+    return best
+
+
+def _range_descriptor(unit_label: str, range_: NumericRange) -> str:
+    min_, max_, equals = range_
+    if equals is not None:
+        return f"exactly {equals:g}{unit_label}"
+    parts = []
+    if min_ is not None:
+        parts.append(f"at least {min_:g}{unit_label}")
+    if max_ is not None:
+        parts.append(f"at most {max_:g}{unit_label}")
+    return " and ".join(parts)
+
+
+def _no_ev_match_message(
+    networks: list[str] | None,
+    exclude_networks: list[str] | None,
+    connector_types: list[str] | None,
+    charger_levels: list[str] | None,
+    chargers_range: NumericRange,
+    power_kw_range: NumericRange,
+    voltage_range: NumericRange,
+    amperage_range: NumericRange,
+    any_nearby: bool,
+    scanned_count: int,
+) -> str:
+    if not any_nearby:
+        return "No EV charging stations were found near that location at all."
+    bits: list[str] = []
+    if networks:
+        bits.append(f"on {_list_descriptor(networks)}")
+    if exclude_networks:
+        bits.append(f"excluding {_list_descriptor(exclude_networks)}")
+    if connector_types:
+        bits.append(f"with a {'/'.join(connector_types)} connector")
+    if charger_levels:
+        bits.append(f"with a {'/'.join(charger_levels)} charger")
+    if _range_is_set(*chargers_range):
+        bits.append(f"with {_range_descriptor(' chargers', chargers_range)}")
+    if _any_range_set(power_kw_range, voltage_range, amperage_range):
+        spec_bits = []
+        if _range_is_set(*power_kw_range):
+            spec_bits.append(_range_descriptor(" kW", power_kw_range))
+        if _range_is_set(*voltage_range):
+            spec_bits.append(_range_descriptor(" V", voltage_range))
+        if _range_is_set(*amperage_range):
+            spec_bits.append(_range_descriptor(" A", amperage_range))
+        bits.append(f"meeting {' / '.join(spec_bits)} (only some stations report specs)")
+    if not bits:
+        return "No stations matched the requested filters."
+    return (
+        f"No EV charging stations {' and '.join(bits)} were found, among the "
+        f"{scanned_count} nearest stations checked."
+    )
+
+
+def _sort_ev_stations_by_metric(
+    stations: list[EvStation], sort_by: str, sort_order: str
+) -> list[EvStation]:
+    """Ranks by a single scalar per station. For chargers, that's always
+    the total plug count. For a connector spec (power_kw/voltage/
+    amperage), it's that station's OWN highest value of the field when
+    ranking highest, or its own lowest value when ranking lowest — the
+    natural reading of "the highest voltage charger at this station."
+    Stations with no connector_details for that field (AFDC-only) have no
+    value to rank by and are dropped, not sorted to one end."""
+    reverse = sort_order == "highest"
+    if sort_by == "chargers":
+        return sorted(stations, key=_ev_station_total_chargers, reverse=reverse)
+
+    field = {"power_kw": "power_kw", "voltage": "voltage", "amperage": "amps"}[sort_by]
+    scored: list[tuple[float, EvStation]] = []
+    for s in stations:
+        values = [
+            getattr(d, field) for d in s.connector_details if getattr(d, field) is not None
+        ]
+        if not values:
+            continue
+        metric = max(values) if sort_order == "highest" else min(values)
+        scored.append((metric, s))
+    scored.sort(key=lambda pair: pair[0], reverse=reverse)
+    return [s for _, s in scored]
+
+
+def _gas_lookup_error_note(exc: BaseException) -> str:
+    """Mirrors the exception-to-message mapping in
+    ChatService._execute_find_stations_call, kept separate rather than
+    shared since find_nearby_gas_and_ev_stations degrades gracefully
+    (one side can fail while the other still returns real results) —
+    the dedicated gas tool has no such "other side" to fall back to."""
+    if isinstance(exc, GeocodingError):
+        return LOCATION_NOT_FOUND_MESSAGE
+    if isinstance(exc, MissingSearchData):
+        return "Missing search parameters for that location."
+    if isinstance(exc, CloudflareBlocked):
+        return "GasBuddy is temporarily blocking automated requests. Try again shortly."
+    if isinstance(exc, (LibraryError, APIError)):
+        return f"GasBuddy lookup failed: {exc}"
+    return f"Gas station lookup failed unexpectedly: {exc}"
+
+
+def _ev_lookup_error_note(exc: BaseException) -> str:
+    """Mirrors ChatService._execute_ev_chargers_call's exception mapping — see
+    _gas_lookup_error_note for why this isn't shared with it directly."""
+    if isinstance(exc, GeocodingError):
+        return LOCATION_NOT_FOUND_MESSAGE
+    if isinstance(exc, AfdcError):
+        return f"EV charger lookup failed: {exc}"
+    return f"EV charger lookup failed unexpectedly: {exc}"
+
+
+def _coerce_string_list(value: Any) -> list[str] | None:
     if not isinstance(value, list):
         return None
     seen: set[str] = set()
@@ -520,7 +1469,7 @@ def _coerce_brand_list(value: Any) -> list[str] | None:
         stripped = v.strip()
         if not stripped:
             continue
-        key = _normalize_brand_text(stripped)
+        key = _normalize_text_for_matching(stripped)
         if key in seen:
             continue
         seen.add(key)
@@ -550,6 +1499,235 @@ def _coerce_brand_tier(value: Any) -> str | None:
     return normalized if normalized in VALID_BRAND_TIERS else None
 
 
+def _coerce_connector_list(value: Any) -> list[str] | None:
+    if not isinstance(value, list):
+        return None
+    seen: set[str] = set()
+    codes: list[str] = []
+    for v in value:
+        if not isinstance(v, str) or not v.strip():
+            continue
+        key = re.sub(r"[\s\-]+", "", v.strip().lower())
+        code = EV_CONNECTOR_ALIASES.get(key, v.strip().upper())
+        if code in seen:
+            continue
+        seen.add(code)
+        codes.append(code)
+    return codes or None
+
+
+def _coerce_charger_level_list(value: Any) -> list[str] | None:
+    if not isinstance(value, list):
+        return None
+    seen: set[str] = set()
+    levels: list[str] = []
+    for v in value:
+        if not isinstance(v, str):
+            continue
+        normalized = v.strip().lower().replace("-", "_").replace(" ", "_")
+        if normalized not in EV_CHARGER_LEVELS or normalized in seen:
+            continue
+        seen.add(normalized)
+        levels.append(normalized)
+    return levels or None
+
+
+def _coerce_numeric_range(args: dict[str, Any], prefix: str) -> NumericRange:
+    return (
+        _coerce_positive_number(args.get(f"{prefix}_min")),
+        _coerce_positive_number(args.get(f"{prefix}_max")),
+        _coerce_positive_number(args.get(f"{prefix}_equals")),
+    )
+
+
+EV_SORT_FIELDS = {"chargers", "power_kw", "voltage", "amperage"}
+EV_SORT_ORDERS = {"highest", "lowest"}
+
+
+def _coerce_ev_sort_by(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    return normalized if normalized in EV_SORT_FIELDS else None
+
+
+def _coerce_ev_sort_order(value: Any) -> str:
+    if not isinstance(value, str):
+        return "highest"
+    normalized = value.strip().lower()
+    return normalized if normalized in EV_SORT_ORDERS else "highest"
+
+
+VALID_PRICE_UNITS = {"dollars", "cents"}
+
+
+def _coerce_price_unit(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    return normalized if normalized in VALID_PRICE_UNITS else None
+
+
+def _price_to_dollars(value: float, unit: str) -> float:
+    return value / 100 if unit == "cents" else value
+
+
+def _price_unit_and_value_for_station(
+    station: GasStation, fuel_grade: str
+) -> tuple[float, str] | None:
+    """Derives the raw price and its unit ("cents"/"dollars") from a
+    station's own formatted price for a grade — e.g. "168.9¢" -> (168.9,
+    "cents") — so a price relayed from a station search into
+    calculate_fuel_cost is a direct copy, never something the model has
+    to parse a number back out of a formatted string for."""
+    fuel_price = getattr(station, fuel_grade)
+    if fuel_price is None or fuel_price.price is None:
+        return None
+    formatted = (fuel_price.formatted_price or "").strip()
+    unit = "cents" if formatted.endswith("¢") else "dollars"
+    return fuel_price.price, unit
+
+
+def _format_dollars(value: float) -> str:
+    return f"${value:.2f}"
+
+
+def _format_litres(value: float) -> str:
+    return f"{value:.2f} L"
+
+
+def _calculate_fuel_cost(args: dict[str, Any]) -> dict[str, Any]:
+    """Every fuel-cost calculation the model might ask for, done as
+    exact arithmetic in code rather than left to the model — the same
+    reasoning as the deterministic price sorting on find_nearby_gas_
+    stations. Never raises; an invalid/incomplete combination of
+    arguments for the given mode returns a clear {"error": ...} instead.
+    All money results are in dollars regardless of the input price's
+    unit, since a total cost/savings is naturally a dollar figure either
+    way."""
+    mode = args.get("mode")
+
+    def price_in_dollars(raw_key: str, unit_key: str = "price_unit") -> float | None:
+        raw = _coerce_positive_number(args.get(raw_key))
+        unit = _coerce_price_unit(args.get(unit_key))
+        if raw is None or unit is None:
+            return None
+        return _price_to_dollars(raw, unit)
+
+    if mode == "cost_for_volume":
+        volume = _coerce_positive_number(args.get("volume_litres"))
+        price = price_in_dollars("price_per_litre")
+        if volume is None or price is None:
+            return {
+                "error": (
+                    "cost_for_volume needs a positive volume_litres and "
+                    "a price_per_litre with its price_unit."
+                )
+            }
+        cost = volume * price
+        return {
+            "mode": mode,
+            "volume_litres": volume,
+            "cost": cost,
+            "cost_formatted": _format_dollars(cost),
+            "note": (
+                "This is the exact cost — relay it as-is, don't "
+                "recompute or double-check the arithmetic yourself."
+            ),
+        }
+
+    if mode == "volume_for_budget":
+        budget = _coerce_positive_number(args.get("budget"))
+        price = price_in_dollars("price_per_litre")
+        if budget is None or price is None:
+            return {
+                "error": (
+                    "volume_for_budget needs a positive budget (in "
+                    "dollars) and a price_per_litre with its price_unit."
+                )
+            }
+        volume = budget / price
+        return {
+            "mode": mode,
+            "budget": budget,
+            "volume_litres": volume,
+            "volume_formatted": _format_litres(volume),
+            "note": (
+                "This is the exact volume — relay it as-is, don't "
+                "recompute or double-check the arithmetic yourself."
+            ),
+        }
+
+    if mode == "savings":
+        volume = _coerce_positive_number(args.get("volume_litres"))
+        if volume is None:
+            return {"error": "savings needs a positive volume_litres."}
+
+        price_difference = _coerce_positive_number(args.get("price_difference"))
+        price_unit = _coerce_price_unit(args.get("price_unit"))
+        if price_difference is not None and price_unit is not None:
+            diff_dollars = _price_to_dollars(price_difference, price_unit)
+        else:
+            base_price = price_in_dollars("price_per_litre")
+            compare_price = price_in_dollars("compare_price_per_litre")
+            if base_price is None or compare_price is None:
+                return {
+                    "error": (
+                        "savings needs either price_difference with a "
+                        "price_unit, or both price_per_litre and "
+                        "compare_price_per_litre with a price_unit."
+                    )
+                }
+            diff_dollars = abs(base_price - compare_price)
+
+        savings = volume * diff_dollars
+        return {
+            "mode": mode,
+            "volume_litres": volume,
+            "savings": savings,
+            "savings_formatted": _format_dollars(savings),
+            "note": (
+                "This is the exact savings — relay it as-is, don't "
+                "recompute or double-check the arithmetic yourself."
+            ),
+        }
+
+    if mode == "fill_up_cost":
+        capacity = _coerce_positive_number(args.get("tank_capacity_litres"))
+        fill_percent = args.get("current_fill_percent")
+        price = price_in_dollars("price_per_litre")
+        if (
+            capacity is None
+            or not isinstance(fill_percent, (int, float))
+            or isinstance(fill_percent, bool)
+            or not (0 <= fill_percent <= 100)
+            or price is None
+        ):
+            return {
+                "error": (
+                    "fill_up_cost needs a positive tank_capacity_litres, "
+                    "a current_fill_percent between 0 and 100, and a "
+                    "price_per_litre with its price_unit."
+                )
+            }
+        volume_needed = capacity * (1 - fill_percent / 100)
+        cost = volume_needed * price
+        return {
+            "mode": mode,
+            "volume_needed_litres": volume_needed,
+            "volume_needed_formatted": _format_litres(volume_needed),
+            "cost": cost,
+            "cost_formatted": _format_dollars(cost),
+            "note": (
+                "volume_needed_litres and cost are exact — relay them "
+                "as-is, don't recompute or double-check the arithmetic "
+                "yourself."
+            ),
+        }
+
+    return {"error": f"Unknown calculate_fuel_cost mode '{mode}'."}
+
+
 def _to_gemini_content(message: ChatMessage) -> dict[str, Any]:
     # Gemini has no "assistant" role — its equivalent turn is "model".
     role = "model" if message.role == "assistant" else "user"
@@ -557,16 +1735,24 @@ def _to_gemini_content(message: ChatMessage) -> dict[str, Any]:
 
 
 class ChatService:
-    def __init__(self, gasbuddy: GasBuddyService) -> None:
+    def __init__(
+        self,
+        gasbuddy: GasBuddyService,
+        ev_search: EvSearchService,
+        forecast: ForecastService,
+    ) -> None:
         settings = get_settings()
         self._api_key = settings.gemini_api_key
         self._model = settings.gemini_model
         self._gasbuddy = gasbuddy
+        self._ev_search = ev_search
+        self._forecast = forecast
 
     async def send(
         self,
         messages: list[ChatMessage],
-        location: tuple[float, float] | None = None,
+        gas_location: tuple[float, float] | None = None,
+        ev_location: tuple[float, float] | None = None,
     ) -> ChatMessage:
         """Send the conversation so far to Gemini and return the agent's
         final reply, running its station-lookup tool as many times as it
@@ -620,7 +1806,7 @@ class ChatService:
             contents.append({"role": "model", "parts": parts})
 
             for call in function_calls:
-                response = await self._execute_tool_call(call, location)
+                response = await self._execute_tool_call(call, gas_location, ev_location)
                 contents.append(
                     # Confirmed live: this Gemini model's role enum
                     # rejects "function" (a valid role in some other
@@ -767,24 +1953,390 @@ class ChatService:
         return all_stations, page1.lat, page1.lon, len(all_stations), True
 
     async def _execute_tool_call(
-        self, call: dict[str, Any], location: tuple[float, float] | None
+        self,
+        call: dict[str, Any],
+        gas_location: tuple[float, float] | None,
+        ev_location: tuple[float, float] | None,
     ) -> dict[str, Any]:
         """Runs one function call and returns the functionResponse payload
         to feed back to Gemini. Never raises — any failure becomes an
         error message for the model to relay, so one bad call can't crash
         the whole chat request."""
         name = call.get("name")
-        if name != "find_nearby_gas_stations":
-            return {"error": f"Unknown tool '{name}'."}
-
         # Unlike Groq/OpenAI-style tool_calls (whose arguments arrive as a
         # JSON string needing json.loads), Gemini's functionCall.args is
         # already a parsed object.
         args = call.get("args") or {}
+        if name == "find_nearby_gas_stations":
+            return await self._execute_find_stations_call(args, gas_location)
+        if name == "calculate_fuel_cost":
+            return _calculate_fuel_cost(args)
+        if name == "find_nearby_ev_chargers":
+            return await self._execute_ev_chargers_call(args, ev_location)
+        if name == "find_nearby_gas_and_ev_stations":
+            return await self._execute_combined_search_call(args, gas_location, ev_location)
+        if name == "get_gas_price_forecast":
+            return await self._execute_forecast_call(args, gas_location)
+        return {"error": f"Unknown tool '{name}'."}
+
+    async def _execute_ev_chargers_call(
+        self, args: dict[str, Any], location: tuple[float, float] | None
+    ) -> dict[str, Any]:
         place = args.get("location") or None
-        brands = _coerce_brand_list(args.get("brands"))
-        exclude_brands = _coerce_brand_list(args.get("exclude_brands"))
+        max_distance_km = _coerce_positive_number(args.get("max_distance_km"))
+        networks = _coerce_string_list(args.get("networks"))
+        exclude_networks = _coerce_string_list(args.get("exclude_networks"))
+        connector_types = _coerce_connector_list(args.get("connector_types"))
+        charger_levels = _coerce_charger_level_list(args.get("charger_levels"))
+        chargers_range = _coerce_numeric_range(args, "chargers")
+        power_kw_range = _coerce_numeric_range(args, "power_kw")
+        voltage_range = _coerce_numeric_range(args, "voltage")
+        amperage_range = _coerce_numeric_range(args, "amperage")
+        sort_by = _coerce_ev_sort_by(args.get("sort_by"))
+        sort_order = _coerce_ev_sort_order(args.get("sort_order")) if sort_by else None
+        has_filters = any(
+            [
+                networks,
+                exclude_networks,
+                connector_types,
+                charger_levels,
+                _range_is_set(*chargers_range),
+                _any_range_set(power_kw_range, voltage_range, amperage_range),
+                sort_by is not None,
+            ]
+        )
+
+        if place:
+            query, lat, lon = place, None, None
+        elif location is not None:
+            query, lat, lon = None, location[0], location[1]
+        else:
+            return {"error": NO_LOCATION_MESSAGE}
+
+        try:
+            result = await self._ev_search.search_nearest_ev_stations(
+                query=query,
+                lat=lat,
+                lon=lon,
+                limit=EV_FILTERED_FETCH_LIMIT if has_filters else 20,
+                radius_km=max_distance_km,
+            )
+        except GeocodingError:
+            return {"error": LOCATION_NOT_FOUND_MESSAGE}
+        except AfdcError as exc:
+            return {"error": f"EV charger lookup failed: {exc}"}
+        except Exception as exc:  # a tool call must never crash the whole request
+            return {"error": f"EV charger lookup failed unexpectedly: {exc}"}
+
+        if not result.stations:
+            return {"error": "No EV charging stations were found near that location."}
+
+        stations = _filter_ev_stations(
+            result.stations,
+            networks,
+            exclude_networks,
+            connector_types,
+            charger_levels,
+            chargers_range,
+            power_kw_range,
+            voltage_range,
+            amperage_range,
+        )
+        if not stations:
+            return {
+                "error": _no_ev_match_message(
+                    networks,
+                    exclude_networks,
+                    connector_types,
+                    charger_levels,
+                    chargers_range,
+                    power_kw_range,
+                    voltage_range,
+                    amperage_range,
+                    any_nearby=True,
+                    scanned_count=len(result.stations),
+                )
+            }
+
+        if sort_by:
+            stations = _sort_ev_stations_by_metric(stations, sort_by, sort_order)
+            if not stations:
+                return {
+                    "error": (
+                        f"None of the nearby stations report {sort_by.replace('_', ' ')} "
+                        f"data for their chargers, so a '{sort_order}' ranking isn't "
+                        "possible here — only some stations (mostly Open Charge "
+                        "Map-sourced) include this level of detail."
+                    )
+                }
+
+        # Order (by distance, or by sort_by above) is already correct, so
+        # the nearest/best matches are always what survives the cap — a
+        # broad filter can still leave dozens of matches, and every one
+        # relayed back costs real tokens.
+        total_matching = len(stations)
+        stations = stations[:EV_MAX_STATIONS_IN_RESPONSE]
+
+        payload: dict[str, Any] = {
+            "searched_lat": result.lat,
+            "searched_lon": result.lon,
+            "station_count": len(stations),
+            "stations": [_ev_station_summary(s) for s in stations],
+            # Directly answers "what charger types are near me?" without
+            # the model needing to enumerate/dedupe the station list
+            # itself — it's fine at relaying a plain list, just
+            # unreliable at comparing/ranking one.
+            "connector_types_available": sorted(
+                {c.upper() for s in stations for c in s.connector_types}
+            ),
+        }
+        if total_matching > len(stations):
+            payload["total_matching_count"] = total_matching
+            payload["note"] = (
+                f"{total_matching} stations matched — showing the nearest "
+                f"{len(stations)}. Mention there are more if the user asks "
+                "for a longer list, but don't invent additional stations "
+                "yourself."
+            )
+        if sort_by:
+            payload["sorted_by"] = (
+                f"{sort_by} {sort_order} first — the list below is already in "
+                "this exact order; relay it as-is, do not re-sort or "
+                "recompute the ranking"
+            )
+            payload["top_match"] = _ev_station_summary(stations[0])
+
+        filters_applied: dict[str, Any] = {}
+        if networks:
+            filters_applied["networks"] = networks
+        if exclude_networks:
+            filters_applied["exclude_networks"] = exclude_networks
+        if connector_types:
+            filters_applied["connector_types"] = connector_types
+        if charger_levels:
+            filters_applied["charger_levels"] = charger_levels
+        if _range_is_set(*chargers_range):
+            filters_applied["chargers_range"] = chargers_range
+        if _range_is_set(*power_kw_range):
+            filters_applied["power_kw_range"] = power_kw_range
+        if _range_is_set(*voltage_range):
+            filters_applied["voltage_range"] = voltage_range
+        if _range_is_set(*amperage_range):
+            filters_applied["amperage_range"] = amperage_range
+        if sort_by:
+            filters_applied["sort_by"] = sort_by
+            filters_applied["sort_order"] = sort_order
+        if filters_applied:
+            payload["filters_applied"] = filters_applied
+        return payload
+
+    async def _execute_combined_search_call(
+        self,
+        args: dict[str, Any],
+        gas_location: tuple[float, float] | None,
+        ev_location: tuple[float, float] | None,
+    ) -> dict[str, Any]:
+        place = args.get("location") or None
         max_distance_miles = _coerce_positive_number(args.get("max_distance_miles"))
+        max_distance_km = _coerce_positive_number(args.get("max_distance_km"))
+        if max_distance_miles is None and max_distance_km is not None:
+            max_distance_miles = max_distance_km * 0.621371
+        brands = _coerce_string_list(args.get("brands"))
+        exclude_brands = _coerce_string_list(args.get("exclude_brands"))
+        networks = _coerce_string_list(args.get("networks"))
+        exclude_networks = _coerce_string_list(args.get("exclude_networks"))
+
+        # gas_location is the arbitrary-but-consistent tie-breaker when
+        # neither a place was named nor GPS was shared — the two are
+        # identical whenever GPS *is* shared (see ChatScreen's own
+        # gasLocation/evLocation computation), so this only matters when
+        # the Gas and EV tabs were last searched at different places.
+        fallback_location = gas_location if gas_location is not None else ev_location
+        if place:
+            query, lat, lon = place, None, None
+        elif fallback_location is not None:
+            query, lat, lon = None, fallback_location[0], fallback_location[1]
+        else:
+            return {"error": NO_LOCATION_MESSAGE}
+
+        gas_result, ev_result = await asyncio.gather(
+            self._gasbuddy.search_nearest_stations(
+                query=query, lat=lat, lon=lon, limit=GASBUDDY_PAGE_SIZE
+            ),
+            self._ev_search.search_nearest_ev_stations(
+                query=query, lat=lat, lon=lon, limit=GAS_AND_EV_FETCH_LIMIT, radius_km=max_distance_km
+            ),
+            return_exceptions=True,
+        )
+
+        gas_stations: list[GasStation] = []
+        gas_note: str | None = None
+        if isinstance(gas_result, BaseException):
+            gas_note = _gas_lookup_error_note(gas_result)
+        else:
+            gas_stations = _filter_stations(
+                gas_result.stations, brands, exclude_brands, max_distance_miles, brand_tier=None
+            )
+            if not gas_stations:
+                gas_note = "No matching gas stations were found nearby."
+
+        ev_stations: list[EvStation] = []
+        ev_note: str | None = None
+        if isinstance(ev_result, BaseException):
+            ev_note = _ev_lookup_error_note(ev_result)
+        else:
+            ev_stations = _filter_ev_stations(
+                ev_result.stations,
+                networks,
+                exclude_networks,
+                None,
+                None,
+                (None, None, None),
+                (None, None, None),
+                (None, None, None),
+                (None, None, None),
+            )
+            if not ev_stations:
+                ev_note = "No matching EV chargers were found nearby."
+
+        if not gas_stations and not ev_stations:
+            if isinstance(gas_result, GeocodingError) and isinstance(ev_result, GeocodingError):
+                return {"error": LOCATION_NOT_FOUND_MESSAGE}
+            return {
+                "error": " ".join(note for note in (gas_note, ev_note) if note)
+                or "No gas stations or EV chargers were found near that location."
+            }
+
+        # At least one side succeeded with real stations at this point,
+        # so exactly one of these branches always has a result to read
+        # searched_lat/lon from.
+        if not isinstance(gas_result, BaseException):
+            res_lat, res_lon = gas_result.lat, gas_result.lon
+        else:
+            res_lat, res_lon = ev_result.lat, ev_result.lon
+
+        closest = (
+            _closest_gas_ev_pair(gas_stations, ev_stations)
+            if gas_stations and ev_stations
+            else None
+        )
+
+        gas_stations = gas_stations[:GAS_AND_EV_MAX_STATIONS_IN_RESPONSE]
+        ev_stations = ev_stations[:GAS_AND_EV_MAX_STATIONS_IN_RESPONSE]
+
+        payload: dict[str, Any] = {
+            "searched_lat": res_lat,
+            "searched_lon": res_lon,
+            "gas_station_count": len(gas_stations),
+            "gas_stations": [_station_summary(s) for s in gas_stations],
+            "ev_station_count": len(ev_stations),
+            "ev_stations": [_ev_station_summary(s) for s in ev_stations],
+        }
+        if gas_note:
+            payload["gas_lookup_note"] = gas_note
+        if ev_note:
+            payload["ev_lookup_note"] = ev_note
+
+        if closest:
+            gas, ev, distance = closest
+            payload["closest_pair"] = {
+                "gas_station": _station_summary(gas),
+                "ev_charger": _ev_station_summary(ev),
+                "distance_between_miles": round(distance, 2),
+            }
+            payload["closest_pair_note"] = (
+                "closest_pair is already the minimum-distance pair between "
+                "a gas station and an EV charger, computed directly from "
+                "real coordinates — relay it exactly as given, never "
+                "estimate, recompute, or second-guess this distance "
+                "yourself."
+            )
+        elif gas_stations and ev_stations:
+            payload["closest_pair_note"] = (
+                "No coordinates were available to compute a closest "
+                "gas/EV pair for these results."
+            )
+
+        filters_applied: dict[str, Any] = {}
+        if brands:
+            filters_applied["brands"] = brands
+        if exclude_brands:
+            filters_applied["exclude_brands"] = exclude_brands
+        if networks:
+            filters_applied["networks"] = networks
+        if exclude_networks:
+            filters_applied["exclude_networks"] = exclude_networks
+        if max_distance_miles is not None:
+            filters_applied["max_distance_miles"] = max_distance_miles
+        if filters_applied:
+            payload["filters_applied"] = filters_applied
+        return payload
+
+    async def _execute_forecast_call(
+        self, args: dict[str, Any], location: tuple[float, float] | None
+    ) -> dict[str, Any]:
+        place = args.get("location") or None
+        if place:
+            try:
+                lat, lon = await geocode(place)
+            except GeocodingError:
+                return {"error": LOCATION_NOT_FOUND_MESSAGE}
+        elif location is not None:
+            lat, lon = location
+        else:
+            return {"error": NO_LOCATION_MESSAGE}
+
+        try:
+            forecast = await self._forecast.forecast(lat, lon)
+        except MissingSearchData:
+            return {"error": "Missing search parameters for that location."}
+        except CloudflareBlocked:
+            return {
+                "error": (
+                    "GasBuddy is temporarily blocking automated requests. "
+                    "Try again shortly."
+                )
+            }
+        except (LibraryError, APIError) as exc:
+            return {"error": f"GasBuddy lookup failed: {exc}"}
+        except Exception as exc:  # a tool call must never crash the whole request
+            return {"error": f"Gas price forecast failed unexpectedly: {exc}"}
+
+        if forecast.stations_sampled == 0:
+            return {"error": "No nearby gas stations were found to base a forecast on."}
+
+        payload = forecast.model_dump()
+        payload["note"] = (
+            "This is a next-day forecast ONLY — there is no data for any "
+            "day beyond tomorrow, so never present this as a multi-day "
+            "trend or answer a further-out question with it. Every "
+            "price/change/direction field above is already computed — "
+            "relay it as-is, never recompute or re-derive it yourself."
+        )
+        if forecast.source == "none":
+            payload["note"] += (
+                " source is 'none': no regional trend data was available "
+                "for this area, so the forecasted values are identical to "
+                "today's — tell the user a real forecast isn't available "
+                "here rather than presenting 'no change' as an actual "
+                "prediction."
+            )
+        return payload
+
+    async def _execute_find_stations_call(
+        self, args: dict[str, Any], location: tuple[float, float] | None
+    ) -> dict[str, Any]:
+        place = args.get("location") or None
+        brands = _coerce_string_list(args.get("brands"))
+        exclude_brands = _coerce_string_list(args.get("exclude_brands"))
+        max_distance_miles = _coerce_positive_number(args.get("max_distance_miles"))
+        max_distance_km = _coerce_positive_number(args.get("max_distance_km"))
+        # max_distance_miles wins if the model (against instructions) sets
+        # both; the conversion (never left to the model) happens once
+        # here, so all the existing distance-filtering/pagination logic
+        # below only ever deals in miles.
+        if max_distance_miles is None and max_distance_km is not None:
+            max_distance_miles = max_distance_km * 0.621371
         fuel_grade = _coerce_fuel_grade(args.get("fuel_grade"))
         brand_tier = _coerce_brand_tier(args.get("brand_tier"))
         # exclude_brands and fuel_grade deliberately don't count as
@@ -825,8 +2377,8 @@ class ChatService:
                 res_lat, res_lon = result.lat, result.lon
                 scanned_count = len(all_stations)
                 any_nearby = bool(all_stations)
-        except GeocodingError as exc:
-            return {"error": str(exc)}
+        except GeocodingError:
+            return {"error": LOCATION_NOT_FOUND_MESSAGE}
         except MissingSearchData:
             return {"error": "Missing search parameters for that location."}
         except CloudflareBlocked:
@@ -859,15 +2411,25 @@ class ChatService:
         cheapest: dict[str, Any] | None = None
         average_price: float | None = None
         average_price_formatted: str | None = None
+        average_price_unit: str | None = None
         if fuel_grade:
             sorted_stations = _sort_by_fuel_grade(stations, fuel_grade)
             if not sorted_stations:
                 return {"error": _no_fuel_grade_message(fuel_grade, len(stations))}
             stations = sorted_stations
             cheapest = _station_summary(stations[0])
+            # Adds a raw price + its unit alongside the formatted string
+            # already in cheapest, so a follow-up calculate_fuel_cost
+            # call can use this price directly rather than parsing it
+            # back out of e.g. "168.9¢".
+            price_info = _price_unit_and_value_for_station(stations[0], fuel_grade)
+            if price_info is not None:
+                cheapest["price_per_litre"], cheapest["price_unit"] = price_info
             average_info = _average_fuel_price(stations, fuel_grade)
             if average_info is not None:
                 average_price, average_price_formatted = average_info
+                if price_info is not None:
+                    average_price_unit = price_info[1]
 
         payload: dict[str, Any] = {
             "searched_lat": res_lat,
@@ -888,6 +2450,7 @@ class ChatService:
             payload["cheapest"] = cheapest
             payload["average_price"] = average_price
             payload["average_price_formatted"] = average_price_formatted
+            payload["average_price_unit"] = average_price_unit
 
         filters_applied: dict[str, Any] = {}
         if brands:
@@ -907,5 +2470,7 @@ class ChatService:
 
 def get_chat_service(
     gasbuddy: GasBuddyService = Depends(get_gasbuddy_service),
+    ev_search: EvSearchService = Depends(get_ev_search_service),
+    forecast: ForecastService = Depends(get_forecast_service),
 ) -> ChatService:
-    return ChatService(gasbuddy)
+    return ChatService(gasbuddy, ev_search, forecast)
