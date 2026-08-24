@@ -3,7 +3,13 @@
  */
 
 import React from 'react';
-import {ActivityIndicator, FlatList, TextInput} from 'react-native';
+import {
+  ActivityIndicator,
+  FlatList,
+  Keyboard,
+  TextInput,
+  TouchableWithoutFeedback,
+} from 'react-native';
 import {act, create, ReactTestRenderer} from 'react-test-renderer';
 import {it, expect, jest} from '@jest/globals';
 import WebView from 'react-native-webview';
@@ -646,4 +652,30 @@ it('restores the first page from persisted state without refetching, dropping an
   await act(async () => {
     renderer!.unmount();
   });
+});
+
+it('dismisses the keyboard when tapping outside the search bar, without requiring a search', async () => {
+  const dismissSpy = jest.spyOn(Keyboard, 'dismiss');
+
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      <EvScreen
+        persistedSearch={INITIAL_PERSISTED_EV_SEARCH}
+        onSearchComplete={jest.fn()}
+      />,
+    );
+  });
+
+  // Both the top search-bar section and the (currently shown, since no
+  // search has run yet) intro section have their own dismiss wrapper —
+  // either one tapped should close the keyboard.
+  await act(async () => {
+    renderer!.root
+      .findAllByType(TouchableWithoutFeedback)
+      .forEach(instance => instance.props.onPress());
+  });
+
+  expect(dismissSpy).toHaveBeenCalled();
+  dismissSpy.mockRestore();
 });

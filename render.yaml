@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: gasagent-api
+    env: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.0
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash-lite
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: NREL_API_KEY
+        sync: false
+      - key: OCM_API_KEY
+        sync: false
+      - key: EIA_API_KEY
+        sync: false
+      # Optional — only needed if GasBuddy's Cloudflare protection blocks
+      # this deploy's IP (see backend/.env.example). Leave unset for now;
+      # gas-station search will return a CloudflareBlocked error until
+      # this points at a working FlareSolverr instance. EV search is
+      # unaffected either way.
+      - key: GASBUDDY_SOLVER_URL
+        sync: false

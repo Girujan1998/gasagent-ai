@@ -288,6 +288,7 @@ it('sends the full conversation history, not just the newest message', async () 
           ],
           error: null,
           cardsByMessageIndex: {},
+          gpsLocation: null,
         }}
         onChatComplete={jest.fn()}
         gasTabLocation={null}
@@ -339,6 +340,7 @@ it('keeps the user message and shows an error when the reply fails, without losi
     messages: [{role: 'user', content: 'Hello'}],
     error: 'Invalid API Key',
     cardsByMessageIndex: {},
+    gpsLocation: null,
   });
 });
 
@@ -392,6 +394,7 @@ it('scrolls to the bottom instantly once the list lays out, so a returning tab s
           ],
           error: null,
           cardsByMessageIndex: {},
+          gpsLocation: null,
         }}
         onChatComplete={jest.fn()}
         gasTabLocation={null}
@@ -476,6 +479,85 @@ it('hides the banner once the user shares a fresh GPS location', async () => {
   expect(() =>
     renderer!.root.findByProps({accessibilityLabel: 'Share your location'}),
   ).toThrow();
+});
+
+it('keeps a shared GPS location across a tab switch, so the banner does not reappear', async () => {
+  mockGpsSuccess(41.95, -87.65);
+  const fetchMock = jest.fn(() => Promise.resolve(chatResponse('ok')));
+  global.fetch = fetchMock as unknown as typeof fetch;
+
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(<Harness mounted />);
+  });
+
+  await act(async () => {
+    renderer!.root
+      .findByProps({accessibilityLabel: 'Share your location'})
+      .props.onPress();
+  });
+
+  // Leaving the Chat tab unmounts it; coming back mounts a fresh instance
+  // seeded from whatever was last persisted (same shape as the
+  // conversation-history persistence test above).
+  await act(async () => {
+    renderer!.update(<Harness mounted={false} />);
+  });
+  await act(async () => {
+    renderer!.update(<Harness mounted />);
+  });
+
+  expect(() =>
+    renderer!.root.findByProps({accessibilityLabel: 'Share your location'}),
+  ).toThrow();
+
+  await typeAndSend(renderer!, 'gas near me?');
+  const init = (fetchMock.mock.calls[0] as unknown[])[1] as RequestInit;
+  const body = JSON.parse(init.body as string) as {
+    gas_location?: {lat: number; lon: number};
+  };
+  expect(body.gas_location).toEqual({lat: 41.95, lon: -87.65});
+});
+
+it('keeps the shared GPS location after starting a New Chat', async () => {
+  mockGpsSuccess(41.95, -87.65);
+  const fetchMock = jest.fn(() => Promise.resolve(chatResponse('Hi!')));
+  global.fetch = fetchMock as unknown as typeof fetch;
+
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(<Harness mounted />);
+  });
+
+  await act(async () => {
+    renderer!.root
+      .findByProps({accessibilityLabel: 'Share your location'})
+      .props.onPress();
+  });
+  await typeAndSend(renderer!, 'Hello');
+
+  const alertSpy = jest.spyOn(Alert, 'alert');
+  await act(async () => {
+    renderer!.root
+      .findByProps({accessibilityLabel: 'Start a new chat'})
+      .props.onPress();
+  });
+  await act(async () => {
+    pressAlertButton(alertSpy, 'Start New Chat');
+  });
+
+  expect(() =>
+    renderer!.root.findByProps({accessibilityLabel: 'Share your location'}),
+  ).toThrow();
+
+  await typeAndSend(renderer!, 'gas near me?');
+  const init = (fetchMock.mock.calls[1] as unknown[])[1] as RequestInit;
+  const body = JSON.parse(init.body as string) as {
+    gas_location?: {lat: number; lon: number};
+  };
+  expect(body.gas_location).toEqual({lat: 41.95, lon: -87.65});
+
+  alertSpy.mockRestore();
 });
 
 it('includes the Gas-tab location in the request body when no GPS fix has been shared', async () => {
@@ -786,6 +868,7 @@ it('shows New Chat once a conversation exists, and clears everything when confir
     messages: [],
     error: null,
     cardsByMessageIndex: {},
+    gpsLocation: null,
   });
 
   alertSpy.mockRestore();

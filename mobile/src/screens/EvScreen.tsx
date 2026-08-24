@@ -1,5 +1,11 @@
 import React, {useMemo, useRef, useState} from 'react';
-import {StyleSheet, Text, View} from 'react-native';
+import {
+  Keyboard,
+  StyleSheet,
+  Text,
+  TouchableWithoutFeedback,
+  View,
+} from 'react-native';
 
 import {EvStation, searchNearestEvStations} from '../api/client';
 import LocationSearchBar, {
@@ -345,14 +351,19 @@ function EvScreen({
 
   return (
     <View style={styles.container}>
-      <LocationSearchBar
-        onSearch={handleLocationSearch}
-        initialQuery={persistedSearch.query}
-      />
+      {/* TouchableWithoutFeedback deliberately wraps only this static top
+          section, never EvStationList/EvStationMap below — nesting a
+          FlatList (or a WebView map) inside one is a known way to break
+          its scroll/pan gesture on a real device (not always caught by
+          the Simulator or by tests). */}
+      <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+        <View>
+          <LocationSearchBar
+            onSearch={handleLocationSearch}
+            initialQuery={persistedSearch.query}
+          />
 
-      {hasSearched ? (
-        <>
-          {stations.length > 0 && (
+          {hasSearched && stations.length > 0 && (
             <View style={styles.controlsRow}>
               <ViewModeToggle value={viewMode} onChange={setViewMode} />
               <EvFilterControl
@@ -363,6 +374,11 @@ function EvScreen({
               />
             </View>
           )}
+        </View>
+      </TouchableWithoutFeedback>
+
+      {hasSearched ? (
+        <>
           {viewMode === 'list' ? (
             <EvStationList
               stations={filteredStations}
@@ -388,13 +404,15 @@ function EvScreen({
           )}
         </>
       ) : (
-        <View style={styles.intro}>
-          <Text style={styles.title}>EV Charging</Text>
-          <Text style={styles.subtitle}>
-            Search a city, postal code, or use your current location to find
-            nearby EV charging stations.
-          </Text>
-        </View>
+        <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+          <View style={styles.intro}>
+            <Text style={styles.title}>EV Charging</Text>
+            <Text style={styles.subtitle}>
+              Search a city, postal code, or use your current location to find
+              nearby EV charging stations.
+            </Text>
+          </View>
+        </TouchableWithoutFeedback>
       )}
     </View>
   );

@@ -1,5 +1,12 @@
 import React, {useEffect, useMemo, useRef, useState} from 'react';
-import {ActivityIndicator, StyleSheet, Text, View} from 'react-native';
+import {
+  ActivityIndicator,
+  Keyboard,
+  StyleSheet,
+  Text,
+  TouchableWithoutFeedback,
+  View,
+} from 'react-native';
 
 import {
   GasStation,
@@ -324,14 +331,19 @@ function HomeScreen({
 
   return (
     <View style={styles.container}>
-      <LocationSearchBar
-        onSearch={handleLocationSearch}
-        initialQuery={persistedSearch.query}
-      />
+      {/* TouchableWithoutFeedback deliberately wraps only this static
+          top section, never StationList/StationMap below — nesting a
+          FlatList (or a WebView map) inside one is a known way to break
+          its scroll/pan gesture on a real device (not always caught by
+          the Simulator or by tests). */}
+      <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+        <View>
+          <LocationSearchBar
+            onSearch={handleLocationSearch}
+            initialQuery={persistedSearch.query}
+          />
 
-      {hasSearched ? (
-        <>
-          {stations.length > 0 && (
+          {hasSearched && stations.length > 0 && (
             <View style={styles.controlsRow}>
               <View style={styles.leftControls}>
                 <SortControl
@@ -353,6 +365,11 @@ function HomeScreen({
               />
             </View>
           )}
+        </View>
+      </TouchableWithoutFeedback>
+
+      {hasSearched ? (
+        <>
           {viewMode === 'list' ? (
             <StationList
               stations={sortedStations}
@@ -393,25 +410,27 @@ function HomeScreen({
           )}
         </>
       ) : (
-        <View style={styles.intro}>
-          <Text style={styles.title}>Gas Fill-Up</Text>
-          <Text style={styles.subtitle}>
-            Search a city, postal code, or use your current location to find the
-            20 nearest gas stations.
-          </Text>
-
-          {!health && !healthError && (
-            <ActivityIndicator style={styles.spacing} />
-          )}
-
-          {healthError && (
-            <Text style={[styles.error, styles.spacing]}>
-              ⚠️ Could not reach backend: {healthError}
-              {'\n'}Make sure the FastAPI server is running (see
-              backend/README).
+        <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+          <View style={styles.intro}>
+            <Text style={styles.title}>Gas Fill-Up</Text>
+            <Text style={styles.subtitle}>
+              Search a city, postal code, or use your current location to find
+              the 20 nearest gas stations.
             </Text>
-          )}
-        </View>
+
+            {!health && !healthError && (
+              <ActivityIndicator style={styles.spacing} />
+            )}
+
+            {healthError && (
+              <Text style={[styles.error, styles.spacing]}>
+                ⚠️ Could not reach backend: {healthError}
+                {'\n'}Make sure the FastAPI server is running (see
+                backend/README).
+              </Text>
+            )}
+          </View>
+        </TouchableWithoutFeedback>
       )}
     </View>
   );

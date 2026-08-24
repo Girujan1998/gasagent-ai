@@ -4,10 +4,14 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
+  TouchableWithoutFeedback,
   View,
 } from 'react-native';
 
@@ -21,11 +25,12 @@ import EvStationCard from '../components/EvStationCard';
 import StationCard from '../components/StationCard';
 import {requestLocationPermission} from '../utils/location';
 
-// What survives a tab switch: the conversation so far, and any error from
-// the last send attempt. There's no server-side session yet (see
-// ChatMessage's doc comment in the backend) — the full history is
-// what makes the agent aware of earlier turns at all. A shared/fallback
-// location is deliberately NOT part of this — see gpsLocation below.
+// What survives a tab switch: the conversation so far, any error from the
+// last send attempt, and a shared GPS fix if the user has given one this
+// session — sharing it once shouldn't mean re-sharing it every time this
+// tab is revisited. There's no server-side session yet (see ChatMessage's
+// doc comment in the backend) — the full history is what makes the agent
+// aware of earlier turns at all.
 //
 // Card data for a message is kept in its OWN map, keyed by index into
 // `messages`, rather than as a property on the ChatMessage objects
@@ -40,19 +45,21 @@ export type ChatCardsForMessage = {
   evStations: EvStation[];
 };
 
+type Location = {lat: number; lon: number};
+
 export type PersistedChat = {
   messages: ChatMessage[];
   error: string | null;
   cardsByMessageIndex: Record<number, ChatCardsForMessage>;
+  gpsLocation: Location | null;
 };
 
 export const INITIAL_PERSISTED_CHAT: PersistedChat = {
   messages: [],
   error: null,
   cardsByMessageIndex: {},
+  gpsLocation: null,
 };
-
-type Location = {lat: number; lon: number};
 
 type Props = {
   persistedChat: PersistedChat;
@@ -88,16 +95,17 @@ function MessageBubble({
           </Text>
         </View>
       </View>
-      {cards && (cards.gasStations.length > 0 || cards.evStations.length > 0) && (
-        <View style={styles.cardsColumn}>
-          {cards.gasStations.map(station => (
-            <StationCard key={station.station_id} station={station} />
-          ))}
-          {cards.evStations.map(station => (
-            <EvStationCard key={station.station_id} station={station} />
-          ))}
-        </View>
-      )}
+      {cards &&
+        (cards.gasStations.length > 0 || cards.evStations.length > 0) && (
+          <View style={styles.cardsColumn}>
+            {cards.gasStations.map(station => (
+              <StationCard key={station.station_id} station={station} />
+            ))}
+            {cards.evStations.map(station => (
+              <EvStationCard key={station.station_id} station={station} />
+            ))}
+          </View>
+        )}
     </View>
   );
 }
@@ -120,9 +128,12 @@ function ChatScreen({
   const listRef = useRef<FlatList<ChatMessage>>(null);
 
   // A fresh GPS fix, requested on demand (same shape as FavoritesScreen's
-  // handleShareLocation) — deliberately local, not lifted to App.tsx, so
-  // it resets on tab switch just like Favorites' does.
-  const [gpsLocation, setGpsLocation] = useState<Location | null>(null);
+  // handleShareLocation) — seeded from persistedChat and written back to
+  // it in handleShareLocation, so sharing it once carries across tab
+  // switches instead of asking again every time.
+  const [gpsLocation, setGpsLocation] = useState<Location | null>(
+    persistedChat.gpsLocation,
+  );
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
 
@@ -147,11 +158,18 @@ function ChatScreen({
 
     Geolocation.getCurrentPosition(
       position => {
-        setGpsLocation({
+        const nextGpsLocation = {
           lat: position.coords.latitude,
           lon: position.coords.longitude,
-        });
+        };
+        setGpsLocation(nextGpsLocation);
         setLocating(false);
+        onChatComplete({
+          messages,
+          error,
+          cardsByMessageIndex,
+          gpsLocation: nextGpsLocation,
+        });
       },
       err => {
         setLocationError(err.message || 'Could not get current location.');
@@ -174,7 +192,11 @@ function ChatScreen({
     setSending(true);
 
     try {
-      const response = await sendChatMessage(nextMessages, gasLocation, evLocation);
+      const response = await sendChatMessage(
+        nextMessages,
+        gasLocation,
+        evLocation,
+      );
       const withReply = [...nextMessages, response.message];
       setMessages(withReply);
 
@@ -200,6 +222,7 @@ function ChatScreen({
         messages: withReply,
         error: null,
         cardsByMessageIndex: nextCardsByMessageIndex,
+        gpsLocation,
       });
     } catch (err) {
       // The user's own message stays on screen either way — only the
@@ -211,6 +234,7 @@ function ChatScreen({
         messages: nextMessages,
         error: message,
         cardsByMessageIndex,
+        gpsLocation,
       });
     } finally {
       setSending(false);
@@ -230,7 +254,15 @@ function ChatScreen({
             setMessages([]);
             setCardsByMessageIndex({});
             setError(null);
-            onChatComplete({messages: [], error: null, cardsByMessageIndex: {}});
+            // gpsLocation deliberately survives a "New Chat" — starting a
+            // fresh conversation doesn't mean the user's physical location
+            // changed, so there's no reason to make them re-share it.
+            onChatComplete({
+              messages: [],
+              error: null,
+              cardsByMessageIndex: {},
+              gpsLocation,
+            });
           },
         },
       ],
@@ -238,80 +270,109 @@ function ChatScreen({
   };
 
   return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Chat</Text>
-        {messages.length > 0 && (
-          <TouchableOpacity
-            onPress={handleClearChat}
-            accessibilityLabel="Start a new chat">
-            <Text style={styles.clearButtonText}>New Chat</Text>
-          </TouchableOpacity>
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <View style={styles.container}>
+        {/* TouchableWithoutFeedback deliberately does NOT wrap the FlatList
+            below — nesting a scrollable list inside one is a known way to
+            break its scroll gesture on a real device (not always caught by
+            the Simulator or by tests). The list dismisses the keyboard on
+            its own via keyboardDismissMode instead; this only covers the
+            static header/banner area above it. */}
+        <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+          <View>
+            <View style={styles.header}>
+              <Text style={styles.title}>Chat</Text>
+              {messages.length > 0 && (
+                <TouchableOpacity
+                  onPress={handleClearChat}
+                  accessibilityLabel="Start a new chat">
+                  <Text style={styles.clearButtonText}>New Chat</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {!gpsLocation && (
+              <TouchableOpacity
+                style={styles.locationBanner}
+                onPress={handleShareLocation}
+                disabled={locating}
+                accessibilityLabel="Share your location">
+                {locating ? (
+                  <ActivityIndicator size="small" color="#1565c0" />
+                ) : (
+                  <Text style={styles.locationBannerText}>
+                    {gasTabLocation
+                      ? '📍 Using your last searched location — tap to use your current location instead'
+                      : '📍 Share your location to find gas stations near you'}
+                  </Text>
+                )}
+              </TouchableOpacity>
+            )}
+            {locationError && (
+              <Text style={styles.locationError}>{locationError}</Text>
+            )}
+          </View>
+        </TouchableWithoutFeedback>
+
+        {messages.length === 0 ? (
+          <TouchableWithoutFeedback
+            onPress={Keyboard.dismiss}
+            accessible={false}>
+            <View style={styles.intro}>
+              <Text style={styles.introTitle}>
+                Ask the GasAgent.ai assistant
+              </Text>
+              <Text style={styles.introSubtitle}>
+                Ask about nearby gas stations, prices, or general questions —
+                share your location above for stations near you.
+              </Text>
+            </View>
+          </TouchableWithoutFeedback>
+        ) : (
+          <FlatList
+            ref={listRef}
+            style={styles.list}
+            contentContainerStyle={styles.listContent}
+            data={messages}
+            keyExtractor={(_, index) => String(index)}
+            renderItem={({item, index}) => (
+              <MessageBubble
+                message={item}
+                cards={cardsByMessageIndex[index]}
+              />
+            )}
+            // Lets the user dismiss the keyboard by dragging the list,
+            // same as most chat apps — "handled" keeps taps on cards
+            // (e.g. a favorite star) working normally instead of the
+            // first tap only closing the keyboard.
+            keyboardDismissMode="on-drag"
+            keyboardShouldPersistTaps="handled"
+            // onContentSizeChange alone isn't reliable for a fresh mount
+            // with an already-long history (e.g. switching back to this
+            // tab) — it can fire before the list has actually laid out, so
+            // scrollToEnd silently no-ops and the user lands mid-scroll.
+            // onLayout fires once the list itself is actually laid out, so
+            // it catches that case with an instant (non-animated) jump;
+            // onContentSizeChange still handles a genuinely new message
+            // arriving mid-session with its animated scroll.
+            onLayout={() => listRef.current?.scrollToEnd({animated: false})}
+            onContentSizeChange={() =>
+              listRef.current?.scrollToEnd({animated: true})
+            }
+          />
         )}
-      </View>
 
-      {!gpsLocation && (
-        <TouchableOpacity
-          style={styles.locationBanner}
-          onPress={handleShareLocation}
-          disabled={locating}
-          accessibilityLabel="Share your location">
-          {locating ? (
+        {sending && (
+          <View style={styles.typingRow}>
             <ActivityIndicator size="small" color="#1565c0" />
-          ) : (
-            <Text style={styles.locationBannerText}>
-              {gasTabLocation
-                ? '📍 Using your last searched location — tap to use your current location instead'
-                : '📍 Share your location to find gas stations near you'}
-            </Text>
-          )}
-        </TouchableOpacity>
-      )}
-      {locationError && (
-        <Text style={styles.locationError}>{locationError}</Text>
-      )}
+            <Text style={styles.typingText}>Thinking…</Text>
+          </View>
+        )}
 
-      {messages.length === 0 ? (
-        <View style={styles.intro}>
-          <Text style={styles.introTitle}>Ask the GasAgent.ai assistant</Text>
-          <Text style={styles.introSubtitle}>
-            Ask about nearby gas stations, prices, or general questions — share
-            your location above for stations near you.
-          </Text>
-        </View>
-      ) : (
-        <FlatList
-          ref={listRef}
-          style={styles.list}
-          contentContainerStyle={styles.listContent}
-          data={messages}
-          keyExtractor={(_, index) => String(index)}
-          renderItem={({item, index}) => (
-            <MessageBubble message={item} cards={cardsByMessageIndex[index]} />
-          )}
-          // onContentSizeChange alone isn't reliable for a fresh mount
-          // with an already-long history (e.g. switching back to this
-          // tab) — it can fire before the list has actually laid out, so
-          // scrollToEnd silently no-ops and the user lands mid-scroll.
-          // onLayout fires once the list itself is actually laid out, so
-          // it catches that case with an instant (non-animated) jump;
-          // onContentSizeChange still handles a genuinely new message
-          // arriving mid-session with its animated scroll.
-          onLayout={() => listRef.current?.scrollToEnd({animated: false})}
-          onContentSizeChange={() =>
-            listRef.current?.scrollToEnd({animated: true})
-          }
-        />
-      )}
-
-      {sending && (
-        <View style={styles.typingRow}>
-          <ActivityIndicator size="small" color="#1565c0" />
-          <Text style={styles.typingText}>Thinking…</Text>
-        </View>
-      )}
-
-      {error && <Text style={styles.error}>⚠️ {error}</Text>}
+        {error && <Text style={styles.error}>⚠️ {error}</Text>}
+      </View>
 
       <View style={styles.composerRow}>
         <TextInput
@@ -334,7 +395,7 @@ function ChatScreen({
           <Text style={styles.sendButtonText}>Send</Text>
         </TouchableOpacity>
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
