@@ -3,6 +3,7 @@ from typing import Any
 
 from py_gasbuddy import GasBuddy
 
+from app.config import get_settings
 from app.models.schemas import FuelPrice, GasStation
 from app.services.geocoding import geocode
 
@@ -134,8 +135,8 @@ class GasBuddyService:
     distance populated consistently for city, postal code, and GPS search.
     """
 
-    def __init__(self) -> None:
-        self._client = GasBuddy()
+    def __init__(self, solver_url: str | None = None) -> None:
+        self._client = GasBuddy(solver_url=solver_url)
 
     async def search_nearest_stations(
         self,
@@ -165,4 +166,4 @@ class GasBuddyService:
 
 
 def get_gasbuddy_service() -> GasBuddyService:
-    return GasBuddyService()
+    return GasBuddyService(solver_url=get_settings().gasbuddy_solver_url or None)

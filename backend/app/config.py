@@ -13,6 +13,11 @@ class Settings(BaseSettings):
     ocm_api_key: str = ""
     eia_api_key: str = ""
     gemini_api_key: str = ""
+    # FlareSolverr endpoint (e.g. http://127.0.0.1:8191/v1) — only needed
+    # when GasBuddy's Cloudflare protection blocks the deploy's own IP
+    # (common from a datacenter/cloud IP, not from a home connection).
+    # Empty means py-gasbuddy talks to GasBuddy directly, unchanged.
+    gasbuddy_solver_url: str = ""
     # Kept configurable rather than hardcoded — the available models and
     # their free-tier quotas change over time (confirmed live:
     # gemini-2.5-flash, an earlier default here, is no longer offered to

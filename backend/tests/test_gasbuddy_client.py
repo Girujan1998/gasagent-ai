@@ -1,4 +1,12 @@
-from app.services.gasbuddy_client import _select_brands, _to_gas_station
+from unittest.mock import patch
+
+from app.config import Settings
+from app.services.gasbuddy_client import (
+    GasBuddyService,
+    _select_brands,
+    _to_gas_station,
+    get_gasbuddy_service,
+)
 
 
 def test_select_brands_picks_the_brand_matching_station_name():
@@ -154,3 +162,42 @@ def test_to_gas_station_has_no_amenities_when_missing():
     station = _to_gas_station(raw)
 
     assert station.amenities == []
+
+
+# --- solver_url wiring (FlareSolverr, for Cloudflare-blocked deploys) ------
+
+
+def test_gasbuddy_service_passes_solver_url_to_the_underlying_client():
+    with patch("app.services.gasbuddy_client.GasBuddy") as fake_gasbuddy:
+        GasBuddyService(solver_url="http://127.0.0.1:8191/v1")
+
+    fake_gasbuddy.assert_called_once_with(solver_url="http://127.0.0.1:8191/v1")
+
+
+def test_gasbuddy_service_defaults_to_no_solver_url():
+    with patch("app.services.gasbuddy_client.GasBuddy") as fake_gasbuddy:
+        GasBuddyService()
+
+    fake_gasbuddy.assert_called_once_with(solver_url=None)
+
+
+def test_get_gasbuddy_service_reads_solver_url_from_settings():
+    settings = Settings(gasbuddy_solver_url="http://127.0.0.1:8191/v1")
+    with (
+        patch("app.services.gasbuddy_client.get_settings", return_value=settings),
+        patch("app.services.gasbuddy_client.GasBuddy") as fake_gasbuddy,
+    ):
+        get_gasbuddy_service()
+
+    fake_gasbuddy.assert_called_once_with(solver_url="http://127.0.0.1:8191/v1")
+
+
+def test_get_gasbuddy_service_defaults_to_no_solver_url_when_unset():
+    settings = Settings(gasbuddy_solver_url="")
+    with (
+        patch("app.services.gasbuddy_client.get_settings", return_value=settings),
+        patch("app.services.gasbuddy_client.GasBuddy") as fake_gasbuddy,
+    ):
+        get_gasbuddy_service()
+
+    fake_gasbuddy.assert_called_once_with(solver_url=None)
