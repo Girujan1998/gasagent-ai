@@ -394,7 +394,7 @@ function HomeScreen({
         </>
       ) : (
         <View style={styles.intro}>
-          <Text style={styles.title}>GasAgent.ai</Text>
+          <Text style={styles.title}>Gas Fill-Up</Text>
           <Text style={styles.subtitle}>
             Search a city, postal code, or use your current location to find the
             20 nearest gas stations.
@@ -402,12 +402,6 @@ function HomeScreen({
 
           {!health && !healthError && (
             <ActivityIndicator style={styles.spacing} />
-          )}
-
-          {health && (
-            <Text style={[styles.status, styles.spacing]}>
-              ✅ {health.app_name} — {health.status}
-            </Text>
           )}
 
           {healthError && (
@@ -459,11 +453,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: '#666',
     marginTop: 8,
-    textAlign: 'center',
-  },
-  status: {
-    fontSize: 16,
-    color: '#2e7d32',
     textAlign: 'center',
   },
   error: {

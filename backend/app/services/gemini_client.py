@@ -1,5 +1,7 @@
 import asyncio
 import re
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -7,7 +9,7 @@ from fastapi import Depends
 from py_gasbuddy import APIError, CloudflareBlocked, LibraryError, MissingSearchData
 
 from app.config import get_settings
-from app.models.schemas import ChatMessage, EvStation, GasStation
+from app.models.schemas import ChatMessage, EvStation, FuelPrice, GasStation
 from app.services.afdc_client import AfdcError
 from app.services.ev_search import EvSearchService, get_ev_search_service
 from app.services.gasbuddy_client import (
@@ -168,6 +170,67 @@ FIND_STATIONS_TOOL: dict[str, Any] = {
                     "those instead when the user names one or "
                     "more specific brands. Omit entirely for a "
                     "plain search with no brand-tier preference."
+                ),
+            },
+            "max_report_age_minutes": {
+                "type": "number",
+                "description": (
+                    "Only include stations whose price (for fuel_grade, "
+                    "or 'regular' if fuel_grade isn't set) was reported "
+                    "within this many minutes — e.g. 'gas stations with "
+                    "a price reported in the last 30 minutes' → 30. "
+                    "Every returned station already includes how long "
+                    "ago its price was reported (the "
+                    "{grade}_reported/{grade}_reported_minutes_ago "
+                    "fields) regardless of this param — only set this "
+                    "when the user wants stations FILTERED by freshness, "
+                    "not just told the age. Omit entirely when the user "
+                    "didn't ask about report recency."
+                ),
+            },
+            "sort_by_recency": {
+                "type": "boolean",
+                "description": (
+                    "Pass true when the user asks for the most "
+                    "recently updated/reported price ('what's the most "
+                    "recently updated gas price nearby', 'freshest "
+                    "price near me') — the tool sorts by report time "
+                    "(for fuel_grade, or 'regular' if not set) and "
+                    "returns the answer in most_recent; never judge "
+                    "recency from timestamps yourself. Omit entirely "
+                    "for a plain search with no recency ranking asked "
+                    "for."
+                ),
+            },
+            "sort_by_distance": {
+                "type": "boolean",
+                "description": (
+                    "Pass true when the user wants just the single "
+                    "CLOSEST/NEAREST gas station ('what's the closest "
+                    "gas station to me', 'nearest station nearby') — "
+                    "the tool sorts by real distance and returns the "
+                    "answer in nearest; never judge distance from the "
+                    "station list yourself. A plain 'gas stations near "
+                    "me' with no closest/nearest wording does NOT need "
+                    "this — omit entirely for a plain search with no "
+                    "distance ranking asked for."
+                ),
+            },
+            "top_n": {
+                "type": "integer",
+                "description": (
+                    "Pass this when the user wants more than ONE ranked "
+                    "result — 'the 5 cheapest gas stations', 'top 3 "
+                    "nearest stations' → top_n: 5 or 3. Only meaningful "
+                    "paired with whichever ranking param matches what's "
+                    "being ranked (fuel_grade for cheapest, "
+                    "sort_by_recency for freshest, sort_by_distance for "
+                    "closest) — ignored otherwise. Omit entirely for a "
+                    "single-answer ranking question ('the cheapest "
+                    "station', 'the closest station') — that already "
+                    "returns exactly one answer, or for a plain unranked "
+                    "search, which already returns the full matching "
+                    "list."
                 ),
             },
         },
@@ -499,25 +562,47 @@ FIND_EV_CHARGERS_TOOL: dict[str, Any] = {
             },
             "sort_by": {
                 "type": "string",
-                "enum": ["chargers", "power_kw", "voltage", "amperage"],
+                "enum": ["chargers", "power_kw", "voltage", "amperage", "distance"],
                 "description": (
                     "Pass this whenever the user asks for a ranking — "
                     "'the highest voltage charger near me', 'lowest kW "
                     "charger nearby', 'the station with the most "
-                    "chargers'. Always pair with sort_order. The tool "
-                    "sorts and picks the answer for you (top_match field) "
-                    "— never rank or compare stations yourself. Omit "
-                    "entirely for a plain search with no ranking asked "
-                    "for."
+                    "chargers', 'the CLOSEST/NEAREST charger to me' "
+                    "(pass 'distance' for this — a plain 'EV chargers "
+                    "near me' with no ranking word does NOT need this, "
+                    "only use it when the user specifically wants just "
+                    "the one nearest/farthest station). Always pair with "
+                    "sort_order. The tool sorts and picks the answer for "
+                    "you (top_match field) — never rank or compare "
+                    "stations yourself. Omit entirely for a plain search "
+                    "with no ranking asked for."
                 ),
             },
             "sort_order": {
                 "type": "string",
                 "enum": ["highest", "lowest"],
                 "description": (
-                    "Required alongside sort_by — 'highest' for 'the "
-                    "highest/most/fastest X', 'lowest' for 'the "
-                    "lowest/least/slowest X'."
+                    "Pairs with sort_by — 'highest' for 'the "
+                    "highest/most/fastest X'/'farthest', 'lowest' for "
+                    "'the lowest/least/slowest X'/'closest'/'nearest'. "
+                    "If omitted, defaults to 'lowest' for sort_by: "
+                    "'distance' (closest) and 'highest' for everything "
+                    "else — safest to always set it explicitly rather "
+                    "than rely on this."
+                ),
+            },
+            "top_n": {
+                "type": "integer",
+                "description": (
+                    "Pass this when the user wants more than ONE ranked "
+                    "result — 'the 5 nearest chargers', 'top 3 highest "
+                    "power stations' → top_n: 5 or 3. Only meaningful "
+                    "paired with sort_by; ignored otherwise. Omit "
+                    "entirely for a single-answer ranking question ('the "
+                    "closest charger', 'the highest voltage charger') — "
+                    "that already returns exactly one answer in "
+                    "top_match, or for a plain unranked search, which "
+                    "already returns the full matching list."
                 ),
             },
         },
@@ -547,7 +632,15 @@ FIND_GAS_AND_EV_TOOL: dict[str, Any] = {
         "costs more tokens by searching and returning both at once. "
         "Supports the same brands/exclude_brands (gas) and "
         "networks/exclude_networks (EV) filters as those two tools — "
-        "pass only what the user actually asked for."
+        "pass only what the user actually asked for. If the user asks "
+        "for ANOTHER pair after already getting one in this "
+        "conversation ('find another', 'a different one'), call this "
+        "again with exclude_gas_stations/exclude_ev_stations set to "
+        "every station already shown so far — the tool then computes a "
+        "genuinely different, verified pair; never answer 'another' "
+        "from memory or by picking different-looking stations out of an "
+        "earlier response yourself, since that pair's distance was "
+        "never actually computed."
     ),
     "parameters": {
         "type": "object",
@@ -610,6 +703,28 @@ FIND_GAS_AND_EV_TOOL: dict[str, Any] = {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "One or more EV networks to EXCLUDE. Omit entirely when not asked for.",
+            },
+            "exclude_gas_stations": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Gas station NAMES to exclude from consideration — "
+                    "use this for a 'find another pair' follow-up, set "
+                    "to every gas station already shown earlier in this "
+                    "conversation (not just the most recent one). Omit "
+                    "entirely on a first-time request."
+                ),
+            },
+            "exclude_ev_stations": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "EV charging station NAMES to exclude from "
+                    "consideration — same 'find another pair' use as "
+                    "exclude_gas_stations, set to every EV charger "
+                    "already shown earlier in this conversation. Omit "
+                    "entirely on a first-time request."
+                ),
             },
         },
         "required": [],
@@ -753,6 +868,11 @@ GAS_AND_EV_FETCH_LIMIT = 40
 # lists of this size are already comparable to one list at that size.
 GAS_AND_EV_MAX_STATIONS_IN_RESPONSE = 15
 
+# Upper bound for the new top_n param (gas and EV both) — a "top N ranked
+# stations" card list beyond this is neither a realistic ask nor worth
+# the tokens; matches EV_MAX_STATIONS_IN_RESPONSE's existing cap.
+MAX_TOP_N = 20
+
 # Mirrors mobile/src/utils/brandFilter.ts's WELL_KNOWN_BRANDS — the same
 # recognized-chain list the Gas tab's own brand filter uses. Used by
 # _is_major_brand to classify a station for the brand_tier filter in
@@ -871,7 +991,36 @@ SYSTEM_PROMPT = (
     "(default to 'regular' if no grade is named), then answer strictly "
     "from the tool's cheapest and average_price fields — you are not "
     "reliable at comparing many prices by eye, so never rank, compare, "
-    "or average prices yourself.\n\n"
+    "or average prices yourself.\n"
+    "- Every returned station already shows how long ago its price was "
+    "reported ({grade}_reported, e.g. '12 minutes ago', and "
+    "{grade}_reported_minutes_ago) for every grade it has a price for — "
+    "no extra argument needed, just relay it; never estimate an age from "
+    "a timestamp yourself.\n"
+    "- 'Gas stations with a price reported in the last N minutes' or "
+    "similar freshness requirement: pass max_report_age_minutes: N — "
+    "the tool filters to only stations that fresh before anything else "
+    "(brand/price sorting still apply on top of that narrowed set).\n"
+    "- 'Most recently updated/reported gas price near me', 'freshest "
+    "price nearby': pass sort_by_recency: true, then answer from the "
+    "tool's most_recent field — never judge which price is freshest "
+    "yourself. This can be combined with fuel_grade: cheapest and "
+    "most_recent may be different stations, since they answer different "
+    "questions.\n"
+    "- 'Closest/nearest gas station to me' — a question wanting just "
+    "the single nearest station, not a general list: pass "
+    "sort_by_distance: true, then answer strictly from the tool's "
+    "nearest field — never judge distance from the station list "
+    "yourself. This can be combined with fuel_grade/sort_by_recency: "
+    "nearest, cheapest, and most_recent may all be different stations, "
+    "since they answer different questions.\n"
+    "- A TOP-N ranked list instead of just one station ('the 5 "
+    "cheapest gas stations', 'top 3 nearest stations near me'): also "
+    "pass top_n alongside whichever ranking param matches (fuel_grade "
+    "for cheapest, sort_by_recency for freshest, sort_by_distance for "
+    "nearest) — the tool returns exactly that many stations, already "
+    "in the right order; never guess, truncate, or re-rank the list "
+    "yourself.\n\n"
     "You also have a tool, calculate_fuel_cost, for ANY question "
     "involving fuel arithmetic — total cost for a volume, litres for a "
     "budget, savings from a price difference, or the cost to fill a "
@@ -904,10 +1053,16 @@ SYSTEM_PROMPT = (
     "'at least' → _min, 'at most' → _max, 'more than'/'less than' → "
     "round to the next _min/_max, 'exactly' → _equals. For ranking "
     "questions ('highest voltage charger near me', 'lowest kW charger "
-    "nearby', 'the station with the most chargers'), pass sort_by and "
-    "sort_order — the response's top_match field is already the answer, "
-    "and stations is already sorted; never rank or compare values "
-    "yourself. For 'what charger types are near me' or similar "
+    "nearby', 'the station with the most chargers', 'the CLOSEST/"
+    "NEAREST charger to me' — pass sort_by: 'distance' for this one), "
+    "pass sort_by and sort_order — the response's top_match field is "
+    "already the answer, and stations is already sorted; never rank, "
+    "compare, or judge distance yourself. For a TOP-N ranked list "
+    "instead of just one station ('the 5 nearest chargers', 'top 3 "
+    "highest power stations'), also pass top_n — the tool returns "
+    "exactly that many, already sorted; never guess, truncate, or "
+    "re-rank the list yourself. For 'what charger types are near me' "
+    "or similar "
     "listing questions, call with no filters and read the response's "
     "connector_types_available field directly. Only some stations "
     "report power/voltage/amperage detail; if a power-based filter or "
@@ -933,7 +1088,14 @@ SYSTEM_PROMPT = (
     "second-guess that distance yourself. If either gas_lookup_note or "
     "ev_lookup_note is present, relay that one side's search failed or "
     "found nothing before answering with whatever the other side did "
-    "find.\n\n"
+    "find. If the user asks for ANOTHER pair after already getting one "
+    "in this conversation ('find another', 'a different one'), call "
+    "this tool again with exclude_gas_stations/exclude_ev_stations set "
+    "to every station already shown so far (not just the most recent "
+    "pair) — this is the ONLY way to get a genuinely different, "
+    "verified pair; never answer 'another' from memory or by picking "
+    "different-looking stations out of an earlier response yourself, "
+    "since that pair's distance was never actually computed.\n\n"
     "For future gas prices, use get_gas_price_forecast — it covers "
     "tomorrow's price, whether it's trending up or down, the price "
     "difference from today, and tomorrow's lowest/highest price with "
@@ -981,6 +1143,39 @@ class RateLimitError(ChatError):
     banner every other ChatError produces via the /chat route."""
 
 
+@dataclass
+class StationBundle:
+    """The real GasStation/EvStation objects behind one tool call (or,
+    accumulated across a whole turn) — kept entirely separate from the
+    dict payload sent to Gemini. Every _execute_*_call method returns one
+    of these alongside its Gemini payload; send() merges them across the
+    turn's tool calls into the one returned to the API route for card
+    rendering. Never serialized into a ChatMessage or Gemini content."""
+
+    gas_stations: list[GasStation] = field(default_factory=list)
+    ev_stations: list[EvStation] = field(default_factory=list)
+
+
+@dataclass
+class ChatTurnResult:
+    message: ChatMessage
+    gas_stations: list[GasStation] = field(default_factory=list)
+    ev_stations: list[EvStation] = field(default_factory=list)
+
+
+def _merge_stations(existing: list[Any], new: list[Any]) -> list[Any]:
+    """Appends only stations not already present (by station_id) — a turn
+    can call the same tool more than once (e.g. comparing two brands),
+    and a station found by both calls shouldn't produce two cards."""
+    seen = {s.station_id for s in existing}
+    merged = list(existing)
+    for s in new:
+        if s.station_id not in seen:
+            seen.add(s.station_id)
+            merged.append(s)
+    return merged
+
+
 def _extract_error_message(response: httpx.Response) -> str | None:
     try:
         return response.json()["error"]["message"]
@@ -988,16 +1183,72 @@ def _extract_error_message(response: httpx.Response) -> str | None:
         return None
 
 
+def _minutes_since(timestamp: str | None) -> int | None:
+    """Age of a FuelPrice.last_updated timestamp, in whole minutes. Never
+    raises — a missing or unparseable timestamp (GasBuddy doesn't
+    guarantee one on every price) just means no age can be shown."""
+    if not timestamp:
+        return None
+    try:
+        reported = datetime.fromisoformat(timestamp)
+    except ValueError:
+        return None
+    if reported.tzinfo is None:
+        reported = reported.replace(tzinfo=timezone.utc)
+    delta = datetime.now(timezone.utc) - reported
+    return max(0, int(delta.total_seconds() // 60))
+
+
+def _format_minutes_ago(minutes: int) -> str:
+    """Mirrors mobile/src/utils/time.ts's timeAgo bucketing, so the chat
+    agent and the app's own station cards describe freshness the same
+    way."""
+    if minutes < 1:
+        return "just now"
+    if minutes < 60:
+        return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    days = hours // 24
+    return f"{days} day{'s' if days != 1 else ''} ago"
+
+
+def _fuel_price_report_fields(fuel: FuelPrice | None) -> dict[str, Any]:
+    minutes = _minutes_since(fuel.last_updated) if fuel else None
+    return {
+        "reported": _format_minutes_ago(minutes) if minutes is not None else None,
+        "reported_minutes_ago": minutes,
+    }
+
+
+def _station_report_minutes(station: GasStation, fuel_grade: str) -> int | None:
+    fuel: FuelPrice | None = getattr(station, fuel_grade, None)
+    return _minutes_since(fuel.last_updated) if fuel else None
+
+
 def _station_summary(s: GasStation) -> dict[str, Any]:
+    regular_report = _fuel_price_report_fields(s.regular)
+    midgrade_report = _fuel_price_report_fields(s.midgrade)
+    premium_report = _fuel_price_report_fields(s.premium)
+    diesel_report = _fuel_price_report_fields(s.diesel)
     return {
         "name": s.name,
         "brand": s.brand,
         "address": s.address,
         "distance_miles": s.distance_miles,
         "regular_price": s.regular.formatted_price if s.regular else None,
+        "regular_reported": regular_report["reported"],
+        "regular_reported_minutes_ago": regular_report["reported_minutes_ago"],
         "midgrade_price": s.midgrade.formatted_price if s.midgrade else None,
+        "midgrade_reported": midgrade_report["reported"],
+        "midgrade_reported_minutes_ago": midgrade_report["reported_minutes_ago"],
         "premium_price": s.premium.formatted_price if s.premium else None,
+        "premium_reported": premium_report["reported"],
+        "premium_reported_minutes_ago": premium_report["reported_minutes_ago"],
         "diesel_price": s.diesel.formatted_price if s.diesel else None,
+        "diesel_reported": diesel_report["reported"],
+        "diesel_reported_minutes_ago": diesel_report["reported_minutes_ago"],
     }
 
 
@@ -1195,6 +1446,30 @@ def _sort_by_fuel_grade(
     return sorted(priced, key=lambda s: getattr(s, fuel_grade).price)
 
 
+def _sort_by_recency(stations: list[GasStation], fuel_grade: str) -> list[GasStation]:
+    """Sorts stations by how recently their given grade's price was
+    reported, freshest first — the deterministic replacement for asking
+    the model to judge recency from raw timestamps. A station with no
+    report time for this grade can't be ranked, so it's dropped
+    entirely, same as _sort_by_fuel_grade drops an unpriced station."""
+    dated = [
+        (s, _station_report_minutes(s, fuel_grade))
+        for s in stations
+    ]
+    dated = [(s, minutes) for s, minutes in dated if minutes is not None]
+    dated.sort(key=lambda pair: pair[1])
+    return [s for s, _ in dated]
+
+
+def _sort_by_distance(stations: list[GasStation]) -> list[GasStation]:
+    """Sorts stations nearest-first by real distance_miles — the
+    deterministic answer for a 'closest gas station' question. A station
+    with no distance can't be ranked, so it's dropped entirely, same as
+    _sort_by_recency drops a station with no report time."""
+    with_distance = [s for s in stations if s.distance_miles is not None]
+    return sorted(with_distance, key=lambda s: s.distance_miles)
+
+
 def _average_fuel_price(
     priced_stations: list[GasStation], fuel_grade: str
 ) -> tuple[float, str | None] | None:
@@ -1327,6 +1602,26 @@ def _filter_ev_stations(
     return filtered
 
 
+def _exclude_stations_by_name(stations: list[Any], excluded_names: list[str] | None) -> list[Any]:
+    """Drops stations whose name matches one of excluded_names — used for
+    'find another pair' follow-ups on find_nearby_gas_and_ev_stations,
+    where the model only ever knows a station by name (never station_id,
+    which isn't in _station_summary/_ev_station_summary). Same forgiving
+    substring-either-direction match _brand_matches already uses, so a
+    slightly reworded name still excludes correctly."""
+    if not excluded_names:
+        return stations
+    normalized_excluded = [_normalize_text_for_matching(n) for n in excluded_names]
+
+    def is_excluded(s: Any) -> bool:
+        normalized_name = _normalize_text_for_matching(s.name)
+        return any(
+            n in normalized_name or normalized_name in n for n in normalized_excluded
+        )
+
+    return [s for s in stations if not is_excluded(s)]
+
+
 def _closest_gas_ev_pair(
     gas_stations: list[GasStation], ev_stations: list[EvStation]
 ) -> tuple[GasStation, EvStation, float] | None:
@@ -1407,15 +1702,21 @@ def _sort_ev_stations_by_metric(
     stations: list[EvStation], sort_by: str, sort_order: str
 ) -> list[EvStation]:
     """Ranks by a single scalar per station. For chargers, that's always
-    the total plug count. For a connector spec (power_kw/voltage/
-    amperage), it's that station's OWN highest value of the field when
-    ranking highest, or its own lowest value when ranking lowest — the
-    natural reading of "the highest voltage charger at this station."
-    Stations with no connector_details for that field (AFDC-only) have no
-    value to rank by and are dropped, not sorted to one end."""
+    the total plug count; for distance, distance_miles directly. For a
+    connector spec (power_kw/voltage/amperage), it's that station's OWN
+    highest value of the field when ranking highest, or its own lowest
+    value when ranking lowest — the natural reading of "the highest
+    voltage charger at this station." Stations with no connector_details
+    for that field (AFDC-only) have no value to rank by and are dropped,
+    not sorted to one end."""
     reverse = sort_order == "highest"
     if sort_by == "chargers":
         return sorted(stations, key=_ev_station_total_chargers, reverse=reverse)
+    if sort_by == "distance":
+        # Straight off the station, unlike the connector-detail-derived
+        # fields below — closest/farthest by real distance from the user.
+        with_distance = [s for s in stations if s.distance_miles is not None]
+        return sorted(with_distance, key=lambda s: s.distance_miles, reverse=reverse)
 
     field = {"power_kw": "power_kw", "voltage": "voltage", "amperage": "amps"}[sort_by]
     scored: list[tuple[float, EvStation]] = []
@@ -1485,11 +1786,26 @@ def _coerce_positive_number(value: Any) -> float | None:
     return None
 
 
+def _coerce_top_n(value: Any) -> int | None:
+    n = _coerce_positive_number(value)
+    if n is None:
+        return None
+    return max(1, min(MAX_TOP_N, int(n)))
+
+
 def _coerce_fuel_grade(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
     normalized = value.strip().lower()
     return normalized if normalized in VALID_FUEL_GRADES else None
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return False
 
 
 def _coerce_brand_tier(value: Any) -> str | None:
@@ -1540,7 +1856,7 @@ def _coerce_numeric_range(args: dict[str, Any], prefix: str) -> NumericRange:
     )
 
 
-EV_SORT_FIELDS = {"chargers", "power_kw", "voltage", "amperage"}
+EV_SORT_FIELDS = {"chargers", "power_kw", "voltage", "amperage", "distance"}
 EV_SORT_ORDERS = {"highest", "lowest"}
 
 
@@ -1551,11 +1867,17 @@ def _coerce_ev_sort_by(value: Any) -> str | None:
     return normalized if normalized in EV_SORT_FIELDS else None
 
 
-def _coerce_ev_sort_order(value: Any) -> str:
+def _coerce_ev_sort_order(value: Any, sort_by: str) -> str:
+    # "Highest" is the sensible default for every field except distance —
+    # a model that says sort_by: "distance" and forgets sort_order must
+    # get the CLOSEST station, not the farthest, so distance's default
+    # flips to "lowest" here rather than relying on the model to always
+    # remember to set it explicitly.
+    default = "lowest" if sort_by == "distance" else "highest"
     if not isinstance(value, str):
-        return "highest"
+        return default
     normalized = value.strip().lower()
-    return normalized if normalized in EV_SORT_ORDERS else "highest"
+    return normalized if normalized in EV_SORT_ORDERS else default
 
 
 VALID_PRICE_UNITS = {"dollars", "cents"}
@@ -1753,10 +2075,13 @@ class ChatService:
         messages: list[ChatMessage],
         gas_location: tuple[float, float] | None = None,
         ev_location: tuple[float, float] | None = None,
-    ) -> ChatMessage:
+    ) -> ChatTurnResult:
         """Send the conversation so far to Gemini and return the agent's
         final reply, running its station-lookup tool as many times as it
-        asks to (bounded by MAX_TOOL_ROUNDS).
+        asks to (bounded by MAX_TOOL_ROUNDS) — plus the real station
+        objects (if any) behind this turn's tool call(s), for the mobile
+        client to render as cards. These never touch `contents`/Gemini
+        and are accumulated purely for the returned ChatTurnResult.
 
         Raises ChatError on any failure. A *missing* key is checked here
         directly (rather than letting Gemini reject an empty one) since
@@ -1775,6 +2100,8 @@ class ChatService:
         # printed alongside each round's own usage so the per-turn cost
         # is visible without adding the per-call lines up by hand.
         turn_total_tokens = 0
+        turn_gas_stations: list[GasStation] = []
+        turn_ev_stations: list[EvStation] = []
 
         for round_num in range(1, MAX_TOOL_ROUNDS + 1):
             include_tools = round_num < MAX_TOOL_ROUNDS
@@ -1787,7 +2114,9 @@ class ChatService:
                     f"[gemini] turn total: {turn_total_tokens} tokens across "
                     f"{round_num - 1} call(s) — rate-limited on call {round_num}"
                 )
-                return ChatMessage(role="assistant", content=RATE_LIMIT_MESSAGE)
+                return ChatTurnResult(
+                    message=ChatMessage(role="assistant", content=RATE_LIMIT_MESSAGE)
+                )
             turn_total_tokens += call_tokens
 
             parts = content.get("parts") or []
@@ -1801,12 +2130,20 @@ class ChatService:
                     f"[gemini] turn total: {turn_total_tokens} tokens across "
                     f"{round_num} call(s)"
                 )
-                return ChatMessage(role="assistant", content=text)
+                return ChatTurnResult(
+                    message=ChatMessage(role="assistant", content=text),
+                    gas_stations=turn_gas_stations,
+                    ev_stations=turn_ev_stations,
+                )
 
             contents.append({"role": "model", "parts": parts})
 
             for call in function_calls:
-                response = await self._execute_tool_call(call, gas_location, ev_location)
+                response, bundle = await self._execute_tool_call(
+                    call, gas_location, ev_location
+                )
+                turn_gas_stations = _merge_stations(turn_gas_stations, bundle.gas_stations)
+                turn_ev_stations = _merge_stations(turn_ev_stations, bundle.ev_stations)
                 contents.append(
                     # Confirmed live: this Gemini model's role enum
                     # rejects "function" (a valid role in some other
@@ -1957,30 +2294,45 @@ class ChatService:
         call: dict[str, Any],
         gas_location: tuple[float, float] | None,
         ev_location: tuple[float, float] | None,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], StationBundle]:
         """Runs one function call and returns the functionResponse payload
-        to feed back to Gemini. Never raises — any failure becomes an
-        error message for the model to relay, so one bad call can't crash
-        the whole chat request."""
+        to feed back to Gemini, plus the real station objects (if any)
+        behind it for card rendering. Never raises — any failure becomes
+        an error message for the model to relay, so one bad call can't
+        crash the whole chat request.
+
+        The station-bearing _execute_*_call methods take `bundle` and
+        fill it in as a side effect, right at the point they already
+        have the real station objects on hand to summarize for Gemini —
+        cheaper and far less invasive than turning every one of their
+        many early error-return statements into a tuple."""
         name = call.get("name")
         # Unlike Groq/OpenAI-style tool_calls (whose arguments arrive as a
         # JSON string needing json.loads), Gemini's functionCall.args is
         # already a parsed object.
         args = call.get("args") or {}
+        bundle = StationBundle()
         if name == "find_nearby_gas_stations":
-            return await self._execute_find_stations_call(args, gas_location)
-        if name == "calculate_fuel_cost":
-            return _calculate_fuel_cost(args)
-        if name == "find_nearby_ev_chargers":
-            return await self._execute_ev_chargers_call(args, ev_location)
-        if name == "find_nearby_gas_and_ev_stations":
-            return await self._execute_combined_search_call(args, gas_location, ev_location)
-        if name == "get_gas_price_forecast":
-            return await self._execute_forecast_call(args, gas_location)
-        return {"error": f"Unknown tool '{name}'."}
+            result = await self._execute_find_stations_call(args, gas_location, bundle)
+        elif name == "calculate_fuel_cost":
+            result = _calculate_fuel_cost(args)
+        elif name == "find_nearby_ev_chargers":
+            result = await self._execute_ev_chargers_call(args, ev_location, bundle)
+        elif name == "find_nearby_gas_and_ev_stations":
+            result = await self._execute_combined_search_call(
+                args, gas_location, ev_location, bundle
+            )
+        elif name == "get_gas_price_forecast":
+            result = await self._execute_forecast_call(args, gas_location)
+        else:
+            result = {"error": f"Unknown tool '{name}'."}
+        return result, bundle
 
     async def _execute_ev_chargers_call(
-        self, args: dict[str, Any], location: tuple[float, float] | None
+        self,
+        args: dict[str, Any],
+        location: tuple[float, float] | None,
+        bundle: StationBundle,
     ) -> dict[str, Any]:
         place = args.get("location") or None
         max_distance_km = _coerce_positive_number(args.get("max_distance_km"))
@@ -1993,7 +2345,10 @@ class ChatService:
         voltage_range = _coerce_numeric_range(args, "voltage")
         amperage_range = _coerce_numeric_range(args, "amperage")
         sort_by = _coerce_ev_sort_by(args.get("sort_by"))
-        sort_order = _coerce_ev_sort_order(args.get("sort_order")) if sort_by else None
+        sort_order = (
+            _coerce_ev_sort_order(args.get("sort_order"), sort_by) if sort_by else None
+        )
+        top_n = _coerce_top_n(args.get("top_n"))
         has_filters = any(
             [
                 networks,
@@ -2076,6 +2431,16 @@ class ChatService:
         # relayed back costs real tokens.
         total_matching = len(stations)
         stations = stations[:EV_MAX_STATIONS_IN_RESPONSE]
+        # Same rule as the gas tool: once sort_by picks a specific "the
+        # answer" station (top_match), only that shows as a card — a
+        # plain, unranked search has no single answer, so its full
+        # matching list becomes cards instead. top_n widens that from 1
+        # to N cards for a "top N ranked" question, still just the
+        # highlighted answer(s), not the whole candidate pool.
+        highlight_count = top_n or 1
+        bundle.ev_stations = (
+            stations[:highlight_count] if sort_by and stations else stations
+        )
 
         payload: dict[str, Any] = {
             "searched_lat": result.lat,
@@ -2126,6 +2491,8 @@ class ChatService:
         if sort_by:
             filters_applied["sort_by"] = sort_by
             filters_applied["sort_order"] = sort_order
+        if top_n:
+            filters_applied["top_n"] = top_n
         if filters_applied:
             payload["filters_applied"] = filters_applied
         return payload
@@ -2135,6 +2502,7 @@ class ChatService:
         args: dict[str, Any],
         gas_location: tuple[float, float] | None,
         ev_location: tuple[float, float] | None,
+        bundle: StationBundle,
     ) -> dict[str, Any]:
         place = args.get("location") or None
         max_distance_miles = _coerce_positive_number(args.get("max_distance_miles"))
@@ -2145,6 +2513,12 @@ class ChatService:
         exclude_brands = _coerce_string_list(args.get("exclude_brands"))
         networks = _coerce_string_list(args.get("networks"))
         exclude_networks = _coerce_string_list(args.get("exclude_networks"))
+        # Name-based (not station_id — the model never sees one) exclusion
+        # for "find another pair" follow-ups, so a repeat ask gets a
+        # genuinely different, code-verified closest_pair instead of the
+        # model inventing one from an earlier response's station lists.
+        exclude_gas_stations = _coerce_string_list(args.get("exclude_gas_stations"))
+        exclude_ev_stations = _coerce_string_list(args.get("exclude_ev_stations"))
 
         # gas_location is the arbitrary-but-consistent tie-breaker when
         # neither a place was named nor GPS was shared — the two are
@@ -2177,6 +2551,7 @@ class ChatService:
             gas_stations = _filter_stations(
                 gas_result.stations, brands, exclude_brands, max_distance_miles, brand_tier=None
             )
+            gas_stations = _exclude_stations_by_name(gas_stations, exclude_gas_stations)
             if not gas_stations:
                 gas_note = "No matching gas stations were found nearby."
 
@@ -2196,6 +2571,7 @@ class ChatService:
                 (None, None, None),
                 (None, None, None),
             )
+            ev_stations = _exclude_stations_by_name(ev_stations, exclude_ev_stations)
             if not ev_stations:
                 ev_note = "No matching EV chargers were found nearby."
 
@@ -2223,14 +2599,25 @@ class ChatService:
 
         gas_stations = gas_stations[:GAS_AND_EV_MAX_STATIONS_IN_RESPONSE]
         ev_stations = ev_stations[:GAS_AND_EV_MAX_STATIONS_IN_RESPONSE]
+        # Same rule as the other two tools: a "closest pair" question has
+        # one specific answer — the pair itself — so only those two
+        # stations become cards, not every nearby candidate either side
+        # searched through. Without a pair (one side came up empty), the
+        # reply is a general listing of whichever side succeeded, so that
+        # full list becomes cards instead.
+        if closest:
+            gas, ev, _distance = closest
+            bundle.gas_stations = [gas]
+            bundle.ev_stations = [ev]
+        else:
+            bundle.gas_stations = gas_stations
+            bundle.ev_stations = ev_stations
 
         payload: dict[str, Any] = {
             "searched_lat": res_lat,
             "searched_lon": res_lon,
             "gas_station_count": len(gas_stations),
-            "gas_stations": [_station_summary(s) for s in gas_stations],
             "ev_station_count": len(ev_stations),
-            "ev_stations": [_ev_station_summary(s) for s in ev_stations],
         }
         if gas_note:
             payload["gas_lookup_note"] = gas_note
@@ -2244,18 +2631,31 @@ class ChatService:
                 "ev_charger": _ev_station_summary(ev),
                 "distance_between_miles": round(distance, 2),
             }
+            # Deliberately omits the full gas_stations/ev_stations
+            # candidate lists here (unlike the no-pair branch below) —
+            # confirmed live: with the broader lists visible alongside
+            # closest_pair, the model sometimes named a DIFFERENT station
+            # from those lists instead of relaying the verified pair, even
+            # on a first-time request. Taking the other candidates out of
+            # its context entirely removes that option, not just asks it
+            # not to.
             payload["closest_pair_note"] = (
                 "closest_pair is already the minimum-distance pair between "
                 "a gas station and an EV charger, computed directly from "
-                "real coordinates — relay it exactly as given, never "
-                "estimate, recompute, or second-guess this distance "
-                "yourself."
+                "real coordinates — relay ONLY these two stations, exactly "
+                "as given; never estimate, recompute, or second-guess this "
+                "distance, and never mention or invent any other station "
+                "yourself, even though gas_station_count/ev_station_count "
+                "show more exist nearby."
             )
-        elif gas_stations and ev_stations:
-            payload["closest_pair_note"] = (
-                "No coordinates were available to compute a closest "
-                "gas/EV pair for these results."
-            )
+        else:
+            payload["gas_stations"] = [_station_summary(s) for s in gas_stations]
+            payload["ev_stations"] = [_ev_station_summary(s) for s in ev_stations]
+            if gas_stations and ev_stations:
+                payload["closest_pair_note"] = (
+                    "No coordinates were available to compute a closest "
+                    "gas/EV pair for these results."
+                )
 
         filters_applied: dict[str, Any] = {}
         if brands:
@@ -2268,6 +2668,10 @@ class ChatService:
             filters_applied["exclude_networks"] = exclude_networks
         if max_distance_miles is not None:
             filters_applied["max_distance_miles"] = max_distance_miles
+        if exclude_gas_stations:
+            filters_applied["exclude_gas_stations"] = exclude_gas_stations
+        if exclude_ev_stations:
+            filters_applied["exclude_ev_stations"] = exclude_ev_stations
         if filters_applied:
             payload["filters_applied"] = filters_applied
         return payload
@@ -2324,7 +2728,10 @@ class ChatService:
         return payload
 
     async def _execute_find_stations_call(
-        self, args: dict[str, Any], location: tuple[float, float] | None
+        self,
+        args: dict[str, Any],
+        location: tuple[float, float] | None,
+        bundle: StationBundle,
     ) -> dict[str, Any]:
         place = args.get("location") or None
         brands = _coerce_string_list(args.get("brands"))
@@ -2339,9 +2746,18 @@ class ChatService:
             max_distance_miles = max_distance_km * 0.621371
         fuel_grade = _coerce_fuel_grade(args.get("fuel_grade"))
         brand_tier = _coerce_brand_tier(args.get("brand_tier"))
-        # exclude_brands and fuel_grade deliberately don't count as
-        # "filters" for pagination purposes — they narrow/sort whatever
-        # was already fetched, they never justify fetching more of it.
+        max_report_age_minutes = _coerce_positive_number(args.get("max_report_age_minutes"))
+        sort_by_recency = _coerce_bool(args.get("sort_by_recency"))
+        sort_by_distance = _coerce_bool(args.get("sort_by_distance"))
+        top_n = _coerce_top_n(args.get("top_n"))
+        # Each grade has its own independent report time — the same
+        # "regular" default already documented for a plain "cheapest gas"
+        # question with no grade named applies here too.
+        recency_grade = fuel_grade or "regular"
+        # exclude_brands, fuel_grade, max_report_age_minutes, and
+        # sort_by_recency deliberately don't count as "filters" for
+        # pagination purposes — they narrow/sort whatever was already
+        # fetched, they never justify fetching more of it.
         has_filters = (
             bool(brands) or brand_tier is not None or max_distance_miles is not None
         )
@@ -2408,28 +2824,137 @@ class ChatService:
                 )
             }
 
+        if max_report_age_minutes is not None:
+            stations = [
+                s
+                for s in stations
+                if (m := _station_report_minutes(s, recency_grade)) is not None
+                and m <= max_report_age_minutes
+            ]
+            if not stations:
+                return {
+                    "error": (
+                        f"No stations had a {recency_grade} price reported within "
+                        f"the last {max_report_age_minutes:g} minutes."
+                    )
+                }
+
+        # Each of the three possible "the answer is THIS one station"
+        # rankings is computed independently below — a question can
+        # reasonably ask for more than one at once (e.g. "cheapest AND
+        # most recently updated"), so none of these are mutually
+        # exclusive with each other. Which one wins the final `stations`
+        # ORDER (and the sorted_by instruction text) is decided
+        # separately afterward.
         cheapest: dict[str, Any] | None = None
+        cheapest_station: GasStation | None = None
         average_price: float | None = None
         average_price_formatted: str | None = None
         average_price_unit: str | None = None
+        price_sorted_stations: list[GasStation] | None = None
         if fuel_grade:
-            sorted_stations = _sort_by_fuel_grade(stations, fuel_grade)
-            if not sorted_stations:
+            price_sorted_stations = _sort_by_fuel_grade(stations, fuel_grade)
+            if not price_sorted_stations:
                 return {"error": _no_fuel_grade_message(fuel_grade, len(stations))}
-            stations = sorted_stations
-            cheapest = _station_summary(stations[0])
+            cheapest_station = price_sorted_stations[0]
+            cheapest = _station_summary(cheapest_station)
             # Adds a raw price + its unit alongside the formatted string
             # already in cheapest, so a follow-up calculate_fuel_cost
             # call can use this price directly rather than parsing it
             # back out of e.g. "168.9¢".
-            price_info = _price_unit_and_value_for_station(stations[0], fuel_grade)
+            price_info = _price_unit_and_value_for_station(cheapest_station, fuel_grade)
             if price_info is not None:
                 cheapest["price_per_litre"], cheapest["price_unit"] = price_info
-            average_info = _average_fuel_price(stations, fuel_grade)
+            average_info = _average_fuel_price(price_sorted_stations, fuel_grade)
             if average_info is not None:
                 average_price, average_price_formatted = average_info
                 if price_info is not None:
                     average_price_unit = price_info[1]
+
+        most_recent: dict[str, Any] | None = None
+        most_recent_station: GasStation | None = None
+        recency_sorted_stations: list[GasStation] | None = None
+        if sort_by_recency:
+            recency_sorted_stations = _sort_by_recency(stations, recency_grade)
+            if not recency_sorted_stations:
+                return {
+                    "error": (
+                        f"None of the matching stations have a recent "
+                        f"{recency_grade} price report to rank by."
+                    )
+                }
+            most_recent_station = recency_sorted_stations[0]
+            most_recent = _station_summary(most_recent_station)
+
+        nearest: dict[str, Any] | None = None
+        nearest_station: GasStation | None = None
+        distance_sorted_stations: list[GasStation] | None = None
+        if sort_by_distance:
+            distance_sorted_stations = _sort_by_distance(stations)
+            if not distance_sorted_stations:
+                return {
+                    "error": (
+                        "None of the matching stations have a known "
+                        "distance to rank by."
+                    )
+                }
+            nearest_station = distance_sorted_stations[0]
+            nearest = _station_summary(nearest_station)
+
+        # Final list order + the instruction describing it: whichever
+        # ranking was actually asked for wins, distance > recency > price
+        # — distance is the most concrete/unambiguous signal, and recency
+        # already won over price on its own (the "more specific ask" —
+        # same reasoning extends to distance being even more specific).
+        sorted_by: str | None = None
+        if sort_by_distance:
+            stations = distance_sorted_stations
+            sorted_by = (
+                "distance ascending (closest first) — the list below is "
+                "already in this exact order; relay it as-is, do not "
+                "re-sort or recompute the ranking"
+            )
+        elif sort_by_recency:
+            stations = recency_sorted_stations
+            sorted_by = (
+                f"{recency_grade}_price report recency, most recently reported "
+                "first — the list below is already in this exact order; "
+                "relay it as-is, do not re-sort or re-derive the ranking"
+            )
+        elif fuel_grade:
+            # An explicit instruction, not just data — the model is
+            # unreliable at comparing many prices itself (see
+            # SYSTEM_PROMPT), so this spells out that the order and the
+            # cheapest/average_price fields below are already correct.
+            stations = price_sorted_stations
+            sorted_by = (
+                f"{fuel_grade}_price ascending (cheapest first) — the "
+                "list below is already in this exact order; relay it "
+                "as-is, do not re-sort or recompute the ranking"
+            )
+
+        # Cards should mirror what the reply actually highlights, not the
+        # whole candidate pool the tool searched through — once a
+        # specific "the answer" station exists (cheapest/most_recent/
+        # nearest), only that shows as a card, same as a "closest pair"
+        # question shows just the pair, not every nearby station. A
+        # plain, unranked search has no such single answer, so its full
+        # matching list (what the reply actually lists) becomes cards
+        # instead. top_n overrides this to the top N of the already
+        # precedence-resolved `stations` order — a "top N ranked" ask
+        # wants N cards from ONE ranking, not each field's own single
+        # pick merged together.
+        if top_n:
+            highlighted_stations = stations[:top_n]
+        else:
+            highlighted_stations = [
+                s
+                for s in (cheapest_station, most_recent_station, nearest_station)
+                if s is not None
+            ]
+        bundle.gas_stations = (
+            _merge_stations([], highlighted_stations) if highlighted_stations else stations
+        )
 
         payload: dict[str, Any] = {
             "searched_lat": res_lat,
@@ -2437,20 +2962,17 @@ class ChatService:
             "station_count": len(stations),
             "stations": [_station_summary(s) for s in stations],
         }
+        if sorted_by:
+            payload["sorted_by"] = sorted_by
         if fuel_grade:
-            # An explicit instruction, not just data — the model is
-            # unreliable at comparing many prices itself (see
-            # SYSTEM_PROMPT), so this spells out that the order and the
-            # cheapest/average_price fields below are already correct.
-            payload["sorted_by"] = (
-                f"{fuel_grade}_price ascending (cheapest first) — the "
-                "list below is already in this exact order; relay it "
-                "as-is, do not re-sort or recompute the ranking"
-            )
             payload["cheapest"] = cheapest
             payload["average_price"] = average_price
             payload["average_price_formatted"] = average_price_formatted
             payload["average_price_unit"] = average_price_unit
+        if sort_by_recency:
+            payload["most_recent"] = most_recent
+        if sort_by_distance:
+            payload["nearest"] = nearest
 
         filters_applied: dict[str, Any] = {}
         if brands:
@@ -2463,6 +2985,14 @@ class ChatService:
             filters_applied["max_distance_miles"] = max_distance_miles
         if fuel_grade:
             filters_applied["fuel_grade"] = fuel_grade
+        if max_report_age_minutes is not None:
+            filters_applied["max_report_age_minutes"] = max_report_age_minutes
+        if sort_by_recency:
+            filters_applied["sort_by_recency"] = True
+        if sort_by_distance:
+            filters_applied["sort_by_distance"] = True
+        if top_n:
+            filters_applied["top_n"] = top_n
         if filters_applied:
             payload["filters_applied"] = filters_applied
         return payload

@@ -218,3 +218,12 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     message: ChatMessage
+    # The real station objects behind this turn's tool call(s), if any —
+    # kept OUTSIDE of `message` deliberately: `message` (as a ChatMessage)
+    # is what gets persisted into the client's conversation history and
+    # resent to Gemini on every future turn, and these lists must never
+    # end up there (they'd cost real tokens forever). The mobile client
+    # uses these to render the same station cards the Gas/EV tabs use,
+    # for this response only.
+    gas_stations: list[GasStation] = []
+    ev_stations: list[EvStation] = []

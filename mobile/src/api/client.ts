@@ -153,6 +153,15 @@ export type ChatMessage = {
 
 export type ChatCompletionResponse = {
   message: ChatMessage;
+  // The real stations behind this reply's tool call(s), if any — kept
+  // OUTSIDE of `message` deliberately: `message` is what gets stored in
+  // the conversation history and resent on every future turn, and this
+  // data must never end up there (see ChatScreen's own handling).
+  // Optional in the type (even though the backend always sends them
+  // today) since ChatScreen treats a missing value as an empty list
+  // rather than assuming the field is always present.
+  gas_stations?: GasStation[];
+  ev_stations?: EvStation[];
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

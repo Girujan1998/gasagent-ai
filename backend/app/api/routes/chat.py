@@ -23,9 +23,13 @@ async def send_chat_message(
         else None
     )
     try:
-        reply = await service.send(
+        result = await service.send(
             request.messages, gas_location=gas_location, ev_location=ev_location
         )
     except ChatError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return ChatResponse(message=reply)
+    return ChatResponse(
+        message=result.message,
+        gas_stations=result.gas_stations,
+        ev_stations=result.ev_stations,
+    )

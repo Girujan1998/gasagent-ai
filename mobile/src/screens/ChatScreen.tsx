@@ -2,6 +2,7 @@ import Geolocation from '@react-native-community/geolocation';
 import React, {useRef, useState} from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   StyleSheet,
   Text,
@@ -10,7 +11,14 @@ import {
   View,
 } from 'react-native';
 
-import {ChatMessage, sendChatMessage} from '../api/client';
+import {
+  ChatMessage,
+  EvStation,
+  GasStation,
+  sendChatMessage,
+} from '../api/client';
+import EvStationCard from '../components/EvStationCard';
+import StationCard from '../components/StationCard';
 import {requestLocationPermission} from '../utils/location';
 
 // What survives a tab switch: the conversation so far, and any error from
@@ -18,14 +26,30 @@ import {requestLocationPermission} from '../utils/location';
 // ChatMessage's doc comment in the backend) — the full history is
 // what makes the agent aware of earlier turns at all. A shared/fallback
 // location is deliberately NOT part of this — see gpsLocation below.
+//
+// Card data for a message is kept in its OWN map, keyed by index into
+// `messages`, rather than as a property on the ChatMessage objects
+// themselves — `messages` is exactly what gets JSON.stringify'd into the
+// next sendChatMessage request body (see handleSend below), so anything
+// placed directly on a ChatMessage would round-trip back to the backend
+// (and from there, into every future Gemini call) forever. Safe to key by
+// index here since messages are only ever appended, never reordered or
+// removed.
+export type ChatCardsForMessage = {
+  gasStations: GasStation[];
+  evStations: EvStation[];
+};
+
 export type PersistedChat = {
   messages: ChatMessage[];
   error: string | null;
+  cardsByMessageIndex: Record<number, ChatCardsForMessage>;
 };
 
 export const INITIAL_PERSISTED_CHAT: PersistedChat = {
   messages: [],
   error: null,
+  cardsByMessageIndex: {},
 };
 
 type Location = {lat: number; lon: number};
@@ -35,7 +59,7 @@ type Props = {
   onChatComplete: (chat: PersistedChat) => void;
   // The Gas tab's last-searched location, if any — a fallback so "gas
   // stations near me" can work in Chat without asking for GPS first, the
-  // same value already shared with the Notifications tab (see App.tsx).
+  // same value already shared with the Forecasts tab (see App.tsx).
   gasTabLocation: Location | null;
   // Same idea for EV questions, but sourced from the EV tab's last search
   // instead — kept separate from gasTabLocation since the two tabs can be
@@ -43,19 +67,37 @@ type Props = {
   evTabLocation: Location | null;
 };
 
-function MessageBubble({message}: {message: ChatMessage}): React.JSX.Element {
+function MessageBubble({
+  message,
+  cards,
+}: {
+  message: ChatMessage;
+  cards?: ChatCardsForMessage;
+}): React.JSX.Element {
   const isUser = message.role === 'user';
   return (
-    <View style={[styles.bubbleRow, isUser && styles.bubbleRowUser]}>
-      <View
-        style={[
-          styles.bubble,
-          isUser ? styles.bubbleUser : styles.bubbleAssistant,
-        ]}>
-        <Text style={[styles.bubbleText, isUser && styles.bubbleTextUser]}>
-          {message.content}
-        </Text>
+    <View>
+      <View style={[styles.bubbleRow, isUser && styles.bubbleRowUser]}>
+        <View
+          style={[
+            styles.bubble,
+            isUser ? styles.bubbleUser : styles.bubbleAssistant,
+          ]}>
+          <Text style={[styles.bubbleText, isUser && styles.bubbleTextUser]}>
+            {message.content}
+          </Text>
+        </View>
       </View>
+      {cards && (cards.gasStations.length > 0 || cards.evStations.length > 0) && (
+        <View style={styles.cardsColumn}>
+          {cards.gasStations.map(station => (
+            <StationCard key={station.station_id} station={station} />
+          ))}
+          {cards.evStations.map(station => (
+            <EvStationCard key={station.station_id} station={station} />
+          ))}
+        </View>
+      )}
     </View>
   );
 }
@@ -69,6 +111,9 @@ function ChatScreen({
   const [messages, setMessages] = useState<ChatMessage[]>(
     persistedChat.messages,
   );
+  const [cardsByMessageIndex, setCardsByMessageIndex] = useState<
+    Record<number, ChatCardsForMessage>
+  >(persistedChat.cardsByMessageIndex);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(persistedChat.error);
@@ -132,23 +177,77 @@ function ChatScreen({
       const response = await sendChatMessage(nextMessages, gasLocation, evLocation);
       const withReply = [...nextMessages, response.message];
       setMessages(withReply);
-      onChatComplete({messages: withReply, error: null});
+
+      // The reply lands at this index in `withReply` — record its cards
+      // there (never on the ChatMessage itself, see PersistedChat's own
+      // comment on why) only when there actually are any, to keep most
+      // turns out of this map entirely. Defensive `?? []`: the backend
+      // always sends these today, but a response missing them shouldn't
+      // crash the send.
+      const replyIndex = withReply.length - 1;
+      const gasStations = response.gas_stations ?? [];
+      const evStations = response.ev_stations ?? [];
+      const hasCards = gasStations.length > 0 || evStations.length > 0;
+      const nextCardsByMessageIndex = hasCards
+        ? {
+            ...cardsByMessageIndex,
+            [replyIndex]: {gasStations, evStations},
+          }
+        : cardsByMessageIndex;
+      setCardsByMessageIndex(nextCardsByMessageIndex);
+
+      onChatComplete({
+        messages: withReply,
+        error: null,
+        cardsByMessageIndex: nextCardsByMessageIndex,
+      });
     } catch (err) {
       // The user's own message stays on screen either way — only the
       // reply failed, not their side of the conversation.
       const message =
         err instanceof Error ? err.message : 'Failed to send message.';
       setError(message);
-      onChatComplete({messages: nextMessages, error: message});
+      onChatComplete({
+        messages: nextMessages,
+        error: message,
+        cardsByMessageIndex,
+      });
     } finally {
       setSending(false);
     }
+  };
+
+  const handleClearChat = () => {
+    Alert.alert(
+      'Start a new chat?',
+      "This deletes the current conversation. This can't be undone.",
+      [
+        {text: 'Cancel', style: 'cancel'},
+        {
+          text: 'Start New Chat',
+          style: 'destructive',
+          onPress: () => {
+            setMessages([]);
+            setCardsByMessageIndex({});
+            setError(null);
+            onChatComplete({messages: [], error: null, cardsByMessageIndex: {}});
+          },
+        },
+      ],
+    );
   };
 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>Chat</Text>
+        {messages.length > 0 && (
+          <TouchableOpacity
+            onPress={handleClearChat}
+            accessibilityLabel="Start a new chat">
+            <Text style={styles.clearButtonText}>New Chat</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {!gpsLocation && (
@@ -187,7 +286,9 @@ function ChatScreen({
           contentContainerStyle={styles.listContent}
           data={messages}
           keyExtractor={(_, index) => String(index)}
-          renderItem={({item}) => <MessageBubble message={item} />}
+          renderItem={({item, index}) => (
+            <MessageBubble message={item} cards={cardsByMessageIndex[index]} />
+          )}
           // onContentSizeChange alone isn't reliable for a fresh mount
           // with an already-long history (e.g. switching back to this
           // tab) — it can fire before the list has actually laid out, so
@@ -242,12 +343,20 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingTop: 16,
   },
   title: {
     fontSize: 24,
     fontWeight: '700',
+  },
+  clearButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1565c0',
   },
   locationBanner: {
     marginHorizontal: 16,
@@ -321,6 +430,16 @@ const styles = StyleSheet.create({
   },
   bubbleTextUser: {
     color: '#fff',
+  },
+  cardsColumn: {
+    marginTop: 8,
+    marginBottom: 4,
+    gap: 8,
+    // StationCard/EvStationCard both carry their own marginHorizontal:16
+    // (sized for the Gas/EV tabs' own edge-to-edge lists) — this list's
+    // own paddingHorizontal:16 would double that indent otherwise, so it
+    // cancels out here to keep cards flush with the bubbles above them.
+    marginHorizontal: -16,
   },
   typingRow: {
     flexDirection: 'row',
