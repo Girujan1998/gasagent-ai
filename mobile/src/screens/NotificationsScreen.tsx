@@ -149,7 +149,7 @@ function NotificationsScreen({
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Notifications</Text>
+        <Text style={styles.title}>Forecasts</Text>
         {searchLocation && locationQuery && (
           <Text style={styles.locationLabel}>
             {locationQueryLabel(locationQuery)}

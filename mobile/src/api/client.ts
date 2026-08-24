@@ -153,6 +153,15 @@ export type ChatMessage = {
 
 export type ChatCompletionResponse = {
   message: ChatMessage;
+  // The real stations behind this reply's tool call(s), if any — kept
+  // OUTSIDE of `message` deliberately: `message` is what gets stored in
+  // the conversation history and resent on every future turn, and this
+  // data must never end up there (see ChatScreen's own handling).
+  // Optional in the type (even though the backend always sends them
+  // today) since ChatScreen treats a missing value as an empty list
+  // rather than assuming the field is always present.
+  gas_stations?: GasStation[];
+  ev_stations?: EvStation[];
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -243,15 +252,22 @@ export function getGasPriceForecast(
 
 // Sends the whole conversation so far, oldest first — the backend's chat
 // agent has no server-side memory of its own yet, so each request repeats
-// the full history rather than just the newest message. `location`, when
-// given, lets the agent's station-lookup tool answer "near me" questions
-// without the model having to guess coordinates.
+// the full history rather than just the newest message. `gasLocation` and
+// `evLocation`, when given, let the agent's gas-station and EV-charger
+// tools answer "near me" questions without the model having to guess
+// coordinates — kept separate since they can point at different places
+// (each tab's own last search).
 export function sendChatMessage(
   messages: ChatMessage[],
-  location?: {lat: number; lon: number} | null,
+  gasLocation?: {lat: number; lon: number} | null,
+  evLocation?: {lat: number; lon: number} | null,
 ): Promise<ChatCompletionResponse> {
   return request<ChatCompletionResponse>('/chat', {
     method: 'POST',
-    body: JSON.stringify({messages, location: location ?? undefined}),
+    body: JSON.stringify({
+      messages,
+      gas_location: gasLocation ?? undefined,
+      ev_location: evLocation ?? undefined,
+    }),
   });
 }

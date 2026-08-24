@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.models.schemas import ChatRequest, ChatResponse
-from app.services.chat_client import ChatError, ChatService, get_chat_service
+from app.services.gemini_client import ChatError, ChatService, get_chat_service
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -12,11 +12,24 @@ async def send_chat_message(
     service: ChatService = Depends(get_chat_service),
 ) -> ChatResponse:
     """Send the conversation so far to the AI agent and return its reply."""
-    location = (
-        (request.location.lat, request.location.lon) if request.location else None
+    gas_location = (
+        (request.gas_location.lat, request.gas_location.lon)
+        if request.gas_location
+        else None
+    )
+    ev_location = (
+        (request.ev_location.lat, request.ev_location.lon)
+        if request.ev_location
+        else None
     )
     try:
-        reply = await service.send(request.messages, location)
+        result = await service.send(
+            request.messages, gas_location=gas_location, ev_location=ev_location
+        )
     except ChatError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return ChatResponse(message=reply)
+    return ChatResponse(
+        message=result.message,
+        gas_stations=result.gas_stations,
+        ev_stations=result.ev_stations,
+    )
