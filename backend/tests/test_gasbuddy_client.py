@@ -171,14 +171,26 @@ def test_gasbuddy_service_passes_solver_url_to_the_underlying_client():
     with patch("app.services.gasbuddy_client.GasBuddy") as fake_gasbuddy:
         GasBuddyService(solver_url="http://127.0.0.1:8191/v1")
 
-    fake_gasbuddy.assert_called_once_with(solver_url="http://127.0.0.1:8191/v1")
+    fake_gasbuddy.assert_called_once_with(
+        solver_url="http://127.0.0.1:8191/v1", timeout=60000
+    )
 
 
 def test_gasbuddy_service_defaults_to_no_solver_url():
     with patch("app.services.gasbuddy_client.GasBuddy") as fake_gasbuddy:
         GasBuddyService()
 
-    fake_gasbuddy.assert_called_once_with(solver_url=None)
+    fake_gasbuddy.assert_called_once_with(solver_url=None, timeout=60000)
+
+
+def test_gasbuddy_service_passes_timeout_ms_to_the_underlying_client():
+    # Confirmed live that a harder/slower Cloudflare challenge can need
+    # more than py-gasbuddy's own 60s default to solve — this is what
+    # lets that be raised without patching the library itself.
+    with patch("app.services.gasbuddy_client.GasBuddy") as fake_gasbuddy:
+        GasBuddyService(timeout_ms=120000)
+
+    fake_gasbuddy.assert_called_once_with(solver_url=None, timeout=120000)
 
 
 def test_get_gasbuddy_service_reads_solver_url_from_settings():
@@ -194,7 +206,9 @@ def test_get_gasbuddy_service_reads_solver_url_from_settings():
     ):
         get_gasbuddy_service()
 
-    fake_gasbuddy.assert_called_once_with(solver_url="http://127.0.0.1:8191/v1")
+    fake_gasbuddy.assert_called_once_with(
+        solver_url="http://127.0.0.1:8191/v1", timeout=120000
+    )
     get_gasbuddy_service.cache_clear()
 
 
@@ -207,8 +221,23 @@ def test_get_gasbuddy_service_defaults_to_no_solver_url_when_unset():
     ):
         get_gasbuddy_service()
 
-    fake_gasbuddy.assert_called_once_with(solver_url=None)
+    fake_gasbuddy.assert_called_once_with(solver_url=None, timeout=120000)
     get_gasbuddy_service.cache_clear()
+
+
+def test_get_gasbuddy_service_reads_timeout_ms_from_settings():
+    get_gasbuddy_service.cache_clear()
+    settings = Settings(gasbuddy_timeout_ms=180000)
+    try:
+        with (
+            patch("app.services.gasbuddy_client.get_settings", return_value=settings),
+            patch("app.services.gasbuddy_client.GasBuddy") as fake_gasbuddy,
+        ):
+            get_gasbuddy_service()
+
+        fake_gasbuddy.assert_called_once_with(solver_url=None, timeout=180000)
+    finally:
+        get_gasbuddy_service.cache_clear()
 
 
 def test_get_gasbuddy_service_returns_the_same_instance_across_calls():

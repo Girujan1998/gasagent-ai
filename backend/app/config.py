@@ -18,6 +18,14 @@ class Settings(BaseSettings):
     # (common from a datacenter/cloud IP, not from a home connection).
     # Empty means py-gasbuddy talks to GasBuddy directly, unchanged.
     gasbuddy_solver_url: str = ""
+    # py-gasbuddy's own default (60000) is also what it tells FlareSolverr
+    # as `maxTimeout` — confirmed live that a harder/slower Cloudflare
+    # challenge can genuinely need more than 60s to solve, timing out
+    # here even though FlareSolverr's Chrome was still actively working
+    # on it. Must be paired with raising FlareSolverr's own BROWSER_TIMEOUT
+    # env var to at least this value on its own deploy — this setting
+    # alone doesn't help if FlareSolverr's own cap is still lower.
+    gasbuddy_timeout_ms: int = 120000
     # Kept configurable rather than hardcoded — the available models and
     # their free-tier quotas change over time (confirmed live:
     # gemini-2.5-flash, an earlier default here, is no longer offered to

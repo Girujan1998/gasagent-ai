@@ -136,8 +136,8 @@ class GasBuddyService:
     distance populated consistently for city, postal code, and GPS search.
     """
 
-    def __init__(self, solver_url: str | None = None) -> None:
-        self._client = GasBuddy(solver_url=solver_url)
+    def __init__(self, solver_url: str | None = None, timeout_ms: int = 60000) -> None:
+        self._client = GasBuddy(solver_url=solver_url, timeout=timeout_ms)
 
     async def search_nearest_stations(
         self,
@@ -178,4 +178,8 @@ def get_gasbuddy_service() -> GasBuddyService:
     # RAM-constrained container. Sharing one instance means concurrent
     # requests queue on the same lock and share the same cached token,
     # the way py-gasbuddy's own locking was actually designed to work.
-    return GasBuddyService(solver_url=get_settings().gasbuddy_solver_url or None)
+    settings = get_settings()
+    return GasBuddyService(
+        solver_url=settings.gasbuddy_solver_url or None,
+        timeout_ms=settings.gasbuddy_timeout_ms,
+    )
