@@ -1,7 +1,10 @@
+from unittest.mock import AsyncMock, patch
+
+import httpx
 from fastapi.testclient import TestClient
-from py_gasbuddy import CloudflareBlocked
 
 from app.api.routes.stations import get_gasbuddy_service
+from app.config import Settings, get_settings
 from app.main import app
 from app.models.schemas import FuelPrice, GasStation
 from app.services.gasbuddy_client import StationSearchResult
@@ -45,9 +48,8 @@ def make_station(station_id: str) -> GasStation:
 
 
 class FakeGasBuddyService:
-    def __init__(self, next_cursor: str | None = None, error: Exception | None = None):
+    def __init__(self, next_cursor: str | None = None):
         self._next_cursor = next_cursor
-        self._error = error
         self.last_call_kwargs: dict | None = None
 
     async def search_nearest_stations(
@@ -60,8 +62,6 @@ class FakeGasBuddyService:
             "limit": limit,
             "cursor": cursor,
         }
-        if self._error is not None:
-            raise self._error
         return StationSearchResult(
             stations=[make_station("123")],
             next_cursor=self._next_cursor,
@@ -138,35 +138,79 @@ def test_search_forwards_cursor_and_coordinates_for_next_page():
     }
 
 
-def test_warmup_returns_ready_true_on_success():
-    fake_service = FakeGasBuddyService()
-    app.dependency_overrides[get_gasbuddy_service] = lambda: fake_service
+class _FakeFlareSolverrResponse:
+    """Stands in for httpx.Response — only status_code is ever read by
+    warmup_flaresolverr_container."""
+
+    def __init__(self, status_code: int):
+        self.status_code = status_code
+
+
+def test_warmup_container_reports_awake_with_no_solver_configured_and_makes_no_call():
+    app.dependency_overrides[get_settings] = lambda: Settings(gasbuddy_solver_url="")
+    fake_get = AsyncMock()
     try:
-        response = client.post("/api/v1/stations/warmup")
+        with patch("httpx.AsyncClient.get", new=fake_get):
+            response = client.post("/api/v1/stations/warmup-container")
+    finally:
+        app.dependency_overrides.clear()
+
+    # Nothing configured means nothing to wake — and critically, no
+    # network call at all, so this never adds load against GasBuddy.
+    assert response.status_code == 200
+    assert response.json() == {"awake": True}
+    fake_get.assert_not_called()
+
+
+def test_warmup_container_strips_the_v1_suffix_and_reports_awake_on_200():
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        gasbuddy_solver_url="https://flaresolverr-example.onrender.com/v1"
+    )
+    fake_get = AsyncMock(return_value=_FakeFlareSolverrResponse(200))
+    try:
+        with patch("httpx.AsyncClient.get", new=fake_get):
+            response = client.post("/api/v1/stations/warmup-container")
     finally:
         app.dependency_overrides.clear()
 
     assert response.status_code == 200
-    assert response.json() == {"ready": True, "detail": None}
-    # Exercises the exact same search path a real request would, so
-    # FlareSolverr/py-gasbuddy's token get primed for the user's own
-    # first search, not just a lightweight ping.
-    assert fake_service.last_call_kwargs["lat"] == 43.3601
-    assert fake_service.last_call_kwargs["lon"] == -80.31269
+    assert response.json() == {"awake": True}
+    # Pings FlareSolverr's own lightweight health check, not the /v1
+    # solve endpoint — this must never resemble a real GasBuddy request.
+    fake_get.assert_called_once_with("https://flaresolverr-example.onrender.com")
 
 
-def test_warmup_returns_ready_false_without_raising_when_cloudflare_blocked():
-    app.dependency_overrides[get_gasbuddy_service] = lambda: FakeGasBuddyService(
-        error=CloudflareBlocked("blocked")
+def test_warmup_container_reports_not_awake_on_a_non_200_response():
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        gasbuddy_solver_url="https://flaresolverr-example.onrender.com/v1"
     )
     try:
-        response = client.post("/api/v1/stations/warmup")
+        with patch(
+            "httpx.AsyncClient.get",
+            new=AsyncMock(return_value=_FakeFlareSolverrResponse(503)),
+        ):
+            response = client.post("/api/v1/stations/warmup-container")
     finally:
         app.dependency_overrides.clear()
 
-    # Not ready yet is an expected, retryable state during warmup — never
-    # surfaced as an HTTP error, unlike /stations/search's own handling.
     assert response.status_code == 200
-    body = response.json()
-    assert body["ready"] is False
-    assert body["detail"]
+    assert response.json() == {"awake": False}
+
+
+def test_warmup_container_reports_not_awake_without_raising_when_unreachable():
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        gasbuddy_solver_url="https://flaresolverr-example.onrender.com/v1"
+    )
+    try:
+        with patch(
+            "httpx.AsyncClient.get",
+            new=AsyncMock(side_effect=httpx.ConnectError("connection refused")),
+        ):
+            response = client.post("/api/v1/stations/warmup-container")
+    finally:
+        app.dependency_overrides.clear()
+
+    # A still-sleeping/unreachable container is expected and retryable,
+    # never surfaced as an HTTP error.
+    assert response.status_code == 200
+    assert response.json() == {"awake": False}

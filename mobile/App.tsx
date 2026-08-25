@@ -6,7 +6,7 @@ import {
   useColorScheme,
 } from 'react-native';
 
-import {getHealth, warmupGasSearch} from './src/api/client';
+import {getHealth, warmupFlareSolverrContainer} from './src/api/client';
 import BottomNavBar, {TabKey} from './src/navigation/BottomNavBar';
 import ChatScreen, {
   INITIAL_PERSISTED_CHAT,
@@ -28,16 +28,20 @@ import NotificationsScreen, {
 import SplashScreen from './src/screens/SplashScreen';
 import {FavoritesProvider, useFavorites} from './src/store/FavoritesContext';
 
-// A cold FlareSolverr solve can take ~55-60s, so this bound needs real
-// margin above that to actually cover the normal case (a tighter bound
-// was cutting the splash screen short right before warmup would have
-// finished). Not indefinite, though — EV search and Chat don't depend on
-// FlareSolverr at all, so there's no reason to strand the user for
-// minutes if it's genuinely crashed rather than just cold (Render can
-// take a couple of minutes to notice and restart it) — a gas search
-// attempted before it's actually ready just shows its existing
-// "temporarily blocking" retry message, same as before this existed.
-const WARMUP_TIMEOUT_MS = 90000;
+// This only waits on waking FlareSolverr's own container (a few seconds
+// up to ~20s cold), NOT a real GasBuddy challenge-solve (~55-60s) — an
+// earlier version of this warmup ran a real gas search to also prime a
+// GasBuddy session token, but that fired unconditionally on every app
+// launch regardless of whether the user ever searched for gas that
+// session, adding real load against GasBuddy's own request-rate limit
+// for zero benefit on EV/Chat-only sessions. The user's first real gas
+// search still pays for the actual challenge-solve itself — this bound
+// only needs margin over a container wake, not a full solve. Not
+// indefinite, though — EV search and Chat don't depend on FlareSolverr
+// at all, so there's no reason to strand the user if it's genuinely
+// crashed rather than just cold (Render can take a couple of minutes to
+// notice and restart it).
+const WARMUP_TIMEOUT_MS = 30000;
 
 function ActiveScreen({
   activeTab,
@@ -103,15 +107,12 @@ function ActiveScreen({
 
 function AppContent(): React.JSX.Element {
   const {isReady} = useFavorites();
-  // Wakes the backend + FlareSolverr on launch (see the module comment on
-  // WARMUP_TIMEOUT_MS) rather than waiting for the user's own first gas
-  // search to pay a cold-start cost. Runs once per app launch, not on
-  // every tab switch — this effect lives on AppContent's own mount, same
-  // lifetime as isReady above.
+  // Wakes the backend + FlareSolverr's container on launch (see the
+  // module comment on WARMUP_TIMEOUT_MS for why this stops short of a
+  // real gas search). Runs once per app launch, not on every tab switch
+  // — this effect lives on AppContent's own mount, same lifetime as
+  // isReady above.
   const [warmupDone, setWarmupDone] = useState(false);
-  const [warmupStatusText, setWarmupStatusText] = useState(
-    'Waking up the server…',
-  );
   const [activeTab, setActiveTab] = useState<TabKey>('home');
   // Lifted above HomeScreen/EvScreen so each survives its screen unmounting
   // when the user switches to another tab and back — see the
@@ -146,13 +147,12 @@ function AppContent(): React.JSX.Element {
         if (cancelled) {
           return;
         }
-        setWarmupStatusText('Getting ready for gas prices…');
-        await warmupGasSearch();
+        await warmupFlareSolverrContainer();
       } catch {
-        // Backend unreachable, or the gas warmup itself didn't succeed in
-        // time (e.g. FlareSolverr genuinely crashed) — proceed into the
-        // app regardless; the existing per-screen error handling already
-        // covers a backend/gas search that isn't actually ready.
+        // Backend unreachable, or FlareSolverr's container didn't wake in
+        // time (e.g. genuinely crashed rather than just cold) — proceed
+        // into the app regardless; the existing per-screen error handling
+        // already covers a backend/gas search that isn't actually ready.
       } finally {
         clearTimeout(timeoutId);
         finish();
@@ -166,7 +166,7 @@ function AppContent(): React.JSX.Element {
   }, []);
 
   if (!isReady || !warmupDone) {
-    return <SplashScreen statusText={warmupStatusText} />;
+    return <SplashScreen statusText="Waking up the server…" />;
   }
 
   return (

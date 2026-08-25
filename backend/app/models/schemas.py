@@ -54,12 +54,13 @@ class StationSearchResponse(BaseModel):
     lon: float
 
 
-class WarmupResponse(BaseModel):
-    # Never raised as an HTTPException — "not ready yet" during warmup is
-    # an expected, retryable state, not an error, so this always returns
-    # 200 and lets the caller decide whether/how long to keep polling.
-    ready: bool
-    detail: str | None = None
+class FlareSolverrWarmupResponse(BaseModel):
+    # Whether FlareSolverr's own container responded — this only wakes it
+    # from Render's idle sleep, it never calls GasBuddy itself, so it
+    # carries no rate-limit cost for sessions that never search gas. See
+    # the docstring on warmup_flaresolverr_container for why this exists
+    # as a separate, cheaper endpoint from an actual gas search.
+    awake: bool
 
 
 class EvStationComment(BaseModel):

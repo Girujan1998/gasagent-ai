@@ -1,18 +1,13 @@
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from py_gasbuddy import APIError, CloudflareBlocked, LibraryError, MissingSearchData
 
-from app.models.schemas import StationSearchResponse, WarmupResponse
+from app.config import Settings, get_settings
+from app.models.schemas import FlareSolverrWarmupResponse, StationSearchResponse
 from app.services.gasbuddy_client import GasBuddyService, get_gasbuddy_service
 from app.services.geocoding import GeocodingError
 
 router = APIRouter(prefix="/stations", tags=["stations"])
-
-# A fixed, arbitrary real location (Cambridge, ON) — warmup doesn't care
-# about the result, only about exercising the exact same GasBuddy call a
-# real search makes, so FlareSolverr's container wakes up and py-gasbuddy's
-# CSRF token gets cached before the user's own first search needs it.
-WARMUP_LAT = 43.3601
-WARMUP_LON = -80.31269
 
 
 @router.get("/search", response_model=StationSearchResponse)
@@ -68,18 +63,36 @@ async def search_stations(
     )
 
 
-@router.post("/warmup", response_model=WarmupResponse)
-async def warmup_gas_search(
-    service: GasBuddyService = Depends(get_gasbuddy_service),
-) -> WarmupResponse:
-    """Runs a throwaway search so a client can wake FlareSolverr and prime
-    py-gasbuddy's cached CSRF token ahead of the user's own first search,
-    rather than paying that cost mid-request. Never raises — the caller
-    decides whether/how long to keep polling on `ready: false`."""
+@router.post("/warmup-container", response_model=FlareSolverrWarmupResponse)
+async def warmup_flaresolverr_container(
+    settings: Settings = Depends(get_settings),
+) -> FlareSolverrWarmupResponse:
+    """Wakes FlareSolverr's own container (Render free tier sleeps it
+    after 15 min idle) without calling GasBuddy at all.
+
+    Deliberately does NOT run a real gas search to prime a CSRF token —
+    an earlier version of this endpoint did exactly that, but it fired
+    unconditionally on every app launch regardless of whether the user
+    ever searched for gas that session, adding real load against
+    GasBuddy's own request-rate limit for zero benefit on EV/Chat-only
+    sessions. This only removes the container's cold-start delay; the
+    user's first real gas search still pays for the actual Cloudflare
+    challenge-solve itself, since that step can only happen by actually
+    contacting GasBuddy.
+
+    Never raises — an unreachable/still-sleeping container is an
+    expected, retryable state during startup, not an error.
+    """
+    solver_url = settings.gasbuddy_solver_url
+    if not solver_url:
+        # No solver configured on this deploy (e.g. local dev) — nothing
+        # to wake, so there's nothing blocking a gas search either.
+        return FlareSolverrWarmupResponse(awake=True)
+
+    base_url = solver_url.removesuffix("/v1").removesuffix("/v1/")
     try:
-        await service.search_nearest_stations(lat=WARMUP_LAT, lon=WARMUP_LON, limit=1)
-    except CloudflareBlocked as exc:
-        return WarmupResponse(ready=False, detail=str(exc))
-    except (LibraryError, APIError) as exc:
-        return WarmupResponse(ready=False, detail=str(exc))
-    return WarmupResponse(ready=True)
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.get(base_url)
+        return FlareSolverrWarmupResponse(awake=response.status_code == 200)
+    except httpx.HTTPError:
+        return FlareSolverrWarmupResponse(awake=False)

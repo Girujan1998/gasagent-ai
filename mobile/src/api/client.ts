@@ -180,17 +180,22 @@ export function getHealth(): Promise<HealthResponse> {
   return request<HealthResponse>('/health');
 }
 
-export type WarmupResponse = {
-  ready: boolean;
-  detail: string | null;
+export type FlareSolverrWarmupResponse = {
+  awake: boolean;
 };
 
-// Runs a real (throwaway) gas search server-side so FlareSolverr's
-// container wakes up and the GasBuddy session token gets cached ahead of
-// the user's own first search — see App.tsx's warmup effect. `ready:
-// false` is an expected, retryable response here, not a thrown error.
-export function warmupGasSearch(): Promise<WarmupResponse> {
-  return request<WarmupResponse>('/stations/warmup', {method: 'POST'});
+// Wakes FlareSolverr's own container (see App.tsx's launch effect) —
+// deliberately does NOT run a real gas search. An earlier version of
+// this called a real search to also prime a GasBuddy session token, but
+// that fired unconditionally on every app launch regardless of whether
+// the user ever searched for gas that session, adding real load against
+// GasBuddy's own request-rate limit for zero benefit on EV/Chat-only
+// sessions. `awake: false` is an expected, retryable response here (the
+// container may still be waking up), not a thrown error.
+export function warmupFlareSolverrContainer(): Promise<FlareSolverrWarmupResponse> {
+  return request<FlareSolverrWarmupResponse>('/stations/warmup-container', {
+    method: 'POST',
+  });
 }
 
 export function getLocationAutocomplete(

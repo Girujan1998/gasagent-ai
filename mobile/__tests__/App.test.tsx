@@ -21,10 +21,10 @@ function healthResponse() {
   };
 }
 
-function warmupResponse(ready: boolean) {
+function warmupContainerResponse(awake: boolean) {
   return {
     ok: true,
-    json: () => Promise.resolve({ready, detail: ready ? null : 'not ready'}),
+    json: () => Promise.resolve({awake}),
   };
 }
 
@@ -40,9 +40,9 @@ it('renders correctly', async () => {
   });
 });
 
-it('shows the app once the startup warmup (health + gas warmup) resolves', async () => {
+it('shows the app once the startup warmup (health + FlareSolverr container wake) resolves', async () => {
   let call = 0;
-  const responses = [healthResponse(), warmupResponse(true)];
+  const responses = [healthResponse(), warmupContainerResponse(true)];
   global.fetch = jest.fn(() =>
     Promise.resolve(responses[Math.min(call++, responses.length - 1)]),
   ) as unknown as typeof fetch;
@@ -55,11 +55,11 @@ it('shows the app once the startup warmup (health + gas warmup) resolves', async
   expect(renderer!.root.findAllByType(BottomNavBar)).toHaveLength(1);
 });
 
-it('lets the user into the app after the warmup timeout, even if the gas warmup never resolves', async () => {
+it('lets the user into the app after the warmup timeout, even if the container never wakes', async () => {
   jest.useFakeTimers();
-  // Health resolves normally; the gas warmup call hangs forever (e.g.
-  // FlareSolverr genuinely crashed) — the app must still proceed once
-  // WARMUP_TIMEOUT_MS elapses, rather than blocking indefinitely.
+  // Health resolves normally; the container-warmup call hangs forever
+  // (e.g. FlareSolverr genuinely crashed) — the app must still proceed
+  // once WARMUP_TIMEOUT_MS elapses, rather than blocking indefinitely.
   let call = 0;
   global.fetch = jest.fn(() => {
     call += 1;
@@ -76,7 +76,7 @@ it('lets the user into the app after the warmup timeout, even if the gas warmup 
   expect(renderer!.root.findAllByType(BottomNavBar)).toHaveLength(0);
 
   await act(async () => {
-    jest.advanceTimersByTime(90000);
+    jest.advanceTimersByTime(30000);
   });
 
   expect(renderer!.root.findAllByType(BottomNavBar)).toHaveLength(1);
