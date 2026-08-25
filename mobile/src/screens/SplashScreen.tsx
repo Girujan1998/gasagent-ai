@@ -1,14 +1,23 @@
 import React from 'react';
 import {ActivityIndicator, StyleSheet, Text, View} from 'react-native';
 
-function SplashScreen(): React.JSX.Element {
+type Props = {
+  // Overrides the default subtitle — used during App.tsx's warmup effect
+  // to show what's actually happening ("Waking up the server…") instead
+  // of the generic tagline.
+  statusText?: string;
+};
+
+function SplashScreen({statusText}: Props): React.JSX.Element {
   return (
     <View style={styles.container}>
       <View style={styles.badge}>
         <Text style={styles.badgeIcon}>⛽</Text>
       </View>
       <Text style={styles.title}>GasAgent.ai</Text>
-      <Text style={styles.subtitle}>Find the best fuel prices nearby</Text>
+      <Text style={styles.subtitle}>
+        {statusText ?? 'Find the best fuel prices nearby'}
+      </Text>
       <ActivityIndicator style={styles.spinner} color="#1565c0" />
     </View>
   );

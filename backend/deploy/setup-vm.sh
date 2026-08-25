@@ -10,23 +10,35 @@ set -euo pipefail
 REPO_URL="https://github.com/Girujan1998/gasagent-ai.git"
 APP_DIR="$HOME/gasagent-ai"
 
-echo "==> 1/7: system packages"
+echo "==> 1/8: swap file (e2-micro's 1GB RAM alone isn't enough headroom for"
+echo "    Chrome + FlareSolverr + the backend running at once — confirmed by"
+echo "    the earlier Render crash, which had no way to add swap at all)"
+if [ ! -f /swapfile ]; then
+  sudo fallocate -l 2G /swapfile
+  sudo chmod 600 /swapfile
+  sudo mkswap /swapfile
+  sudo swapon /swapfile
+  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+fi
+free -h
+
+echo "==> 2/8: system packages"
 sudo apt-get update -y
 sudo apt-get install -y docker.io git curl gnupg apt-transport-https debian-keyring debian-archive-keyring
 sudo systemctl enable --now docker
 
-echo "==> 2/7: FlareSolverr (bound to localhost only — never internet-reachable)"
+echo "==> 3/8: FlareSolverr (bound to localhost only — never internet-reachable)"
 sudo docker rm -f flaresolverr >/dev/null 2>&1 || true
 sudo docker run -d --name flaresolverr \
   -p 127.0.0.1:8191:8191 \
   --restart unless-stopped \
   ghcr.io/flaresolverr/flaresolverr:latest
 
-echo "==> 3/7: uv + Python 3.13 (py-gasbuddy needs >=3.13)"
+echo "==> 4/8: uv + Python 3.13 (py-gasbuddy needs >=3.13)"
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 
-echo "==> 4/7: app code + venv"
+echo "==> 5/8: app code + venv"
 if [ -d "$APP_DIR/.git" ]; then
   git -C "$APP_DIR" pull
 else
@@ -36,7 +48,7 @@ cd "$APP_DIR/backend"
 uv venv --python 3.13 .venv
 .venv/bin/pip install -r requirements.txt
 
-echo "==> 5/7: secrets file — EDIT /etc/gasagent/backend.env AFTER THIS RUNS"
+echo "==> 6/8: secrets file — EDIT /etc/gasagent/backend.env AFTER THIS RUNS"
 sudo mkdir -p /etc/gasagent
 if [ ! -f /etc/gasagent/backend.env ]; then
   sudo tee /etc/gasagent/backend.env > /dev/null <<'ENVEOF'
@@ -50,7 +62,7 @@ fi
 sudo chown "$USER":"$USER" /etc/gasagent/backend.env
 sudo chmod 600 /etc/gasagent/backend.env
 
-echo "==> 6/7: backend systemd service (binds to 127.0.0.1 only — Caddy fronts it)"
+echo "==> 7/8: backend systemd service (binds to 127.0.0.1 only — Caddy fronts it)"
 sudo tee /etc/systemd/system/gasagent-backend.service > /dev/null <<EOF
 [Unit]
 Description=GasAgent.ai backend
@@ -70,7 +82,7 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable --now gasagent-backend
 
-echo "==> 7/7: Caddy (auto HTTPS, no domain needed — uses <external-ip>.sslip.io)"
+echo "==> 8/8: Caddy (auto HTTPS, no domain needed — uses <external-ip>.sslip.io)"
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
 sudo apt-get update -y

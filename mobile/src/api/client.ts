@@ -1,11 +1,8 @@
-// Android emulator maps host machine's localhost to 10.0.2.2.
-// iOS simulator can reach the host directly via localhost.
-// A physical device needs the laptop's actual LAN IP instead (both must
-// be on the same WiFi network) — run `ipconfig getifaddr en0` on the
-// laptop to find it if it changes.
-const DEV_HOST = '192.168.0.244';
-
-export const API_BASE_URL = `http://${DEV_HOST}:8001/api/v1`;
+// Hosted on Render (see /render.yaml) — works from any network, no
+// laptop or shared WiFi required. Gas-station search routes through a
+// FlareSolverr instance (GASBUDDY_SOLVER_URL, set on the Render service)
+// to get past GasBuddy's Cloudflare protection.
+export const API_BASE_URL = 'https://gasagent-api.onrender.com/api/v1';
 
 export type HealthResponse = {
   status: string;
@@ -181,6 +178,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function getHealth(): Promise<HealthResponse> {
   return request<HealthResponse>('/health');
+}
+
+export type WarmupResponse = {
+  ready: boolean;
+  detail: string | null;
+};
+
+// Runs a real (throwaway) gas search server-side so FlareSolverr's
+// container wakes up and the GasBuddy session token gets cached ahead of
+// the user's own first search — see App.tsx's warmup effect. `ready:
+// false` is an expected, retryable response here, not a thrown error.
+export function warmupGasSearch(): Promise<WarmupResponse> {
+  return request<WarmupResponse>('/stations/warmup', {method: 'POST'});
 }
 
 export function getLocationAutocomplete(

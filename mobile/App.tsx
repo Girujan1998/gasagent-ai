@@ -1,4 +1,4 @@
-import React, {useState} from 'react';
+import React, {useEffect, useState} from 'react';
 import {
   SafeAreaView,
   StatusBar,
@@ -6,6 +6,7 @@ import {
   useColorScheme,
 } from 'react-native';
 
+import {getHealth, warmupGasSearch} from './src/api/client';
 import BottomNavBar, {TabKey} from './src/navigation/BottomNavBar';
 import ChatScreen, {
   INITIAL_PERSISTED_CHAT,
@@ -26,6 +27,15 @@ import NotificationsScreen, {
 } from './src/screens/NotificationsScreen';
 import SplashScreen from './src/screens/SplashScreen';
 import {FavoritesProvider, useFavorites} from './src/store/FavoritesContext';
+
+// A cold FlareSolverr solve can take ~55s, right up against py-gasbuddy's
+// own 60s timeout — this bounds how long the splash screen waits for it
+// before letting the user into the app regardless. EV search and Chat
+// don't depend on FlareSolverr at all, so there's no reason to block
+// those indefinitely on a stuck gas-specific dependency; a gas search
+// attempted before it's actually ready just shows its existing
+// "temporarily blocking" retry message, same as before this existed.
+const WARMUP_TIMEOUT_MS = 35000;
 
 function ActiveScreen({
   activeTab,
@@ -91,6 +101,15 @@ function ActiveScreen({
 
 function AppContent(): React.JSX.Element {
   const {isReady} = useFavorites();
+  // Wakes the backend + FlareSolverr on launch (see the module comment on
+  // WARMUP_TIMEOUT_MS) rather than waiting for the user's own first gas
+  // search to pay a cold-start cost. Runs once per app launch, not on
+  // every tab switch — this effect lives on AppContent's own mount, same
+  // lifetime as isReady above.
+  const [warmupDone, setWarmupDone] = useState(false);
+  const [warmupStatusText, setWarmupStatusText] = useState(
+    'Waking up the server…',
+  );
   const [activeTab, setActiveTab] = useState<TabKey>('home');
   // Lifted above HomeScreen/EvScreen so each survives its screen unmounting
   // when the user switches to another tab and back — see the
@@ -109,8 +128,43 @@ function AppContent(): React.JSX.Element {
     INITIAL_PERSISTED_CHAT,
   );
 
-  if (!isReady) {
-    return <SplashScreen />;
+  useEffect(() => {
+    let cancelled = false;
+    const finish = () => {
+      if (!cancelled) {
+        setWarmupDone(true);
+      }
+    };
+
+    const timeoutId = setTimeout(finish, WARMUP_TIMEOUT_MS);
+
+    (async () => {
+      try {
+        await getHealth();
+        if (cancelled) {
+          return;
+        }
+        setWarmupStatusText('Getting ready for gas prices…');
+        await warmupGasSearch();
+      } catch {
+        // Backend unreachable, or the gas warmup itself didn't succeed in
+        // time (e.g. FlareSolverr genuinely crashed) — proceed into the
+        // app regardless; the existing per-screen error handling already
+        // covers a backend/gas search that isn't actually ready.
+      } finally {
+        clearTimeout(timeoutId);
+        finish();
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timeoutId);
+    };
+  }, []);
+
+  if (!isReady || !warmupDone) {
+    return <SplashScreen statusText={warmupStatusText} />;
   }
 
   return (

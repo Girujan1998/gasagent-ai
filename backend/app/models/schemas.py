@@ -54,6 +54,14 @@ class StationSearchResponse(BaseModel):
     lon: float
 
 
+class WarmupResponse(BaseModel):
+    # Never raised as an HTTPException — "not ready yet" during warmup is
+    # an expected, retryable state, not an error, so this always returns
+    # 200 and lets the caller decide whether/how long to keep polling.
+    ready: bool
+    detail: str | None = None
+
+
 class EvStationComment(BaseModel):
     author: str
     text: str
