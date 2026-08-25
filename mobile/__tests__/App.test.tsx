@@ -76,7 +76,7 @@ it('lets the user into the app after the warmup timeout, even if the gas warmup 
   expect(renderer!.root.findAllByType(BottomNavBar)).toHaveLength(0);
 
   await act(async () => {
-    jest.advanceTimersByTime(35000);
+    jest.advanceTimersByTime(90000);
   });
 
   expect(renderer!.root.findAllByType(BottomNavBar)).toHaveLength(1);

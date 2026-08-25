@@ -28,14 +28,16 @@ import NotificationsScreen, {
 import SplashScreen from './src/screens/SplashScreen';
 import {FavoritesProvider, useFavorites} from './src/store/FavoritesContext';
 
-// A cold FlareSolverr solve can take ~55s, right up against py-gasbuddy's
-// own 60s timeout — this bounds how long the splash screen waits for it
-// before letting the user into the app regardless. EV search and Chat
-// don't depend on FlareSolverr at all, so there's no reason to block
-// those indefinitely on a stuck gas-specific dependency; a gas search
+// A cold FlareSolverr solve can take ~55-60s, so this bound needs real
+// margin above that to actually cover the normal case (a tighter bound
+// was cutting the splash screen short right before warmup would have
+// finished). Not indefinite, though — EV search and Chat don't depend on
+// FlareSolverr at all, so there's no reason to strand the user for
+// minutes if it's genuinely crashed rather than just cold (Render can
+// take a couple of minutes to notice and restart it) — a gas search
 // attempted before it's actually ready just shows its existing
 // "temporarily blocking" retry message, same as before this existed.
-const WARMUP_TIMEOUT_MS = 35000;
+const WARMUP_TIMEOUT_MS = 90000;
 
 function ActiveScreen({
   activeTab,
