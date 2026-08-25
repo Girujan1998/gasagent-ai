@@ -182,6 +182,11 @@ def test_gasbuddy_service_defaults_to_no_solver_url():
 
 
 def test_get_gasbuddy_service_reads_solver_url_from_settings():
+    # get_gasbuddy_service is @lru_cache'd (see its own docstring for why
+    # — a real singleton, not just cheap-to-construct) — cleared here so
+    # this test observes a fresh construction rather than a cached
+    # instance left over from another test.
+    get_gasbuddy_service.cache_clear()
     settings = Settings(gasbuddy_solver_url="http://127.0.0.1:8191/v1")
     with (
         patch("app.services.gasbuddy_client.get_settings", return_value=settings),
@@ -190,9 +195,11 @@ def test_get_gasbuddy_service_reads_solver_url_from_settings():
         get_gasbuddy_service()
 
     fake_gasbuddy.assert_called_once_with(solver_url="http://127.0.0.1:8191/v1")
+    get_gasbuddy_service.cache_clear()
 
 
 def test_get_gasbuddy_service_defaults_to_no_solver_url_when_unset():
+    get_gasbuddy_service.cache_clear()
     settings = Settings(gasbuddy_solver_url="")
     with (
         patch("app.services.gasbuddy_client.get_settings", return_value=settings),
@@ -201,3 +208,15 @@ def test_get_gasbuddy_service_defaults_to_no_solver_url_when_unset():
         get_gasbuddy_service()
 
     fake_gasbuddy.assert_called_once_with(solver_url=None)
+    get_gasbuddy_service.cache_clear()
+
+
+def test_get_gasbuddy_service_returns_the_same_instance_across_calls():
+    # The actual point of @lru_cache here — concurrent requests must
+    # share one GasBuddy client so its token-refresh lock and cached
+    # token actually apply across requests, not just within one.
+    get_gasbuddy_service.cache_clear()
+    try:
+        assert get_gasbuddy_service() is get_gasbuddy_service()
+    finally:
+        get_gasbuddy_service.cache_clear()

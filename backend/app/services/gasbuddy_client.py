@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 from py_gasbuddy import GasBuddy
@@ -165,5 +166,16 @@ class GasBuddyService:
         )
 
 
+@lru_cache
 def get_gasbuddy_service() -> GasBuddyService:
+    # A real singleton, not just cheap-to-construct — py-gasbuddy's own
+    # CSRF-token refresh lock (and its cached token) lives on the
+    # underlying GasBuddy instance. A fresh instance per request (the
+    # previous behavior here) meant that lock never actually applied
+    # across requests: every concurrent request during a cold start
+    # independently decided it had no cached token and kicked off its
+    # own FlareSolverr solve, several at once competing for the same
+    # RAM-constrained container. Sharing one instance means concurrent
+    # requests queue on the same lock and share the same cached token,
+    # the way py-gasbuddy's own locking was actually designed to work.
     return GasBuddyService(solver_url=get_settings().gasbuddy_solver_url or None)
