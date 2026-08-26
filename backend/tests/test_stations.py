@@ -2,7 +2,9 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 from fastapi.testclient import TestClient
+from py_gasbuddy import CloudflareBlocked, LibraryError
 
+import app.api.routes.stations as stations_module
 from app.api.routes.stations import get_gasbuddy_service
 from app.config import Settings, get_settings
 from app.main import app
@@ -10,6 +12,13 @@ from app.models.schemas import FuelPrice, GasStation
 from app.services.gasbuddy_client import StationSearchResult
 
 client = TestClient(app)
+
+
+def reset_flaresolverr_redeploy_cooldown():
+    # The cooldown is process-global (deliberately — see its own module
+    # comment), so tests that trigger it must reset it, or an earlier
+    # test's trigger would suppress a later test's expected trigger.
+    stations_module._last_flaresolverr_redeploy_trigger = 0.0
 
 
 def make_station(station_id: str) -> GasStation:
@@ -138,6 +147,126 @@ def test_search_forwards_cursor_and_coordinates_for_next_page():
     }
 
 
+class FailingGasBuddyService:
+    def __init__(self, exc: Exception):
+        self._exc = exc
+
+    async def search_nearest_stations(self, **_kwargs):
+        raise self._exc
+
+
+# --- FlareSolverr redeploy triggered reactively by a blocked search -------
+#
+# An earlier version of this eagerly redeployed FlareSolverr on every app
+# launch instead (see git history) — moved here so it only happens when
+# actually needed, since a redeploy takes real time (45s+ for the new
+# container to come up) that shouldn't be paid on every cold app open.
+
+
+def test_search_triggers_a_flaresolverr_redeploy_when_blocked_and_configured():
+    reset_flaresolverr_redeploy_cooldown()
+    app.dependency_overrides[get_gasbuddy_service] = lambda: FailingGasBuddyService(
+        CloudflareBlocked("Missing Token")
+    )
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        render_api_key="rnd_test_key", flaresolverr_service_id="srv-abc123"
+    )
+    fake_post = AsyncMock(return_value=_FakeFlareSolverrResponse(201))
+    try:
+        with patch("httpx.AsyncClient.post", new=fake_post):
+            response = client.get("/api/v1/stations/search", params={"query": "60614"})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 502
+    fake_post.assert_called_once_with(
+        "https://api.render.com/v1/services/srv-abc123/deploys",
+        headers={
+            "Authorization": "Bearer rnd_test_key",
+            "Content-Type": "application/json",
+        },
+        json={},
+    )
+
+
+def test_search_does_not_trigger_a_redeploy_when_render_credentials_are_unset():
+    reset_flaresolverr_redeploy_cooldown()
+    app.dependency_overrides[get_gasbuddy_service] = lambda: FailingGasBuddyService(
+        CloudflareBlocked("Missing Token")
+    )
+    app.dependency_overrides[get_settings] = lambda: Settings()
+    fake_post = AsyncMock()
+    try:
+        with patch("httpx.AsyncClient.post", new=fake_post):
+            response = client.get("/api/v1/stations/search", params={"query": "60614"})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 502
+    fake_post.assert_not_called()
+
+
+def test_search_does_not_retrigger_a_redeploy_within_the_cooldown_window():
+    # A burst of failing requests while a redeploy is already in flight
+    # (the new container isn't up yet, so more searches keep failing)
+    # must not each fire their own redeploy.
+    reset_flaresolverr_redeploy_cooldown()
+    app.dependency_overrides[get_gasbuddy_service] = lambda: FailingGasBuddyService(
+        CloudflareBlocked("Missing Token")
+    )
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        render_api_key="rnd_test_key", flaresolverr_service_id="srv-abc123"
+    )
+    fake_post = AsyncMock(return_value=_FakeFlareSolverrResponse(201))
+    try:
+        with patch("httpx.AsyncClient.post", new=fake_post):
+            client.get("/api/v1/stations/search", params={"query": "60614"})
+            client.get("/api/v1/stations/search", params={"query": "60614"})
+    finally:
+        app.dependency_overrides.clear()
+
+    fake_post.assert_called_once()
+
+
+def test_search_still_returns_502_when_the_redeploy_trigger_itself_fails():
+    reset_flaresolverr_redeploy_cooldown()
+    app.dependency_overrides[get_gasbuddy_service] = lambda: FailingGasBuddyService(
+        CloudflareBlocked("Missing Token")
+    )
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        render_api_key="rnd_test_key", flaresolverr_service_id="srv-abc123"
+    )
+    try:
+        with patch(
+            "httpx.AsyncClient.post",
+            new=AsyncMock(side_effect=httpx.ConnectError("connection refused")),
+        ):
+            response = client.get("/api/v1/stations/search", params={"query": "60614"})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 502
+
+
+def test_search_does_not_trigger_a_redeploy_for_a_non_cloudflare_error():
+    reset_flaresolverr_redeploy_cooldown()
+    app.dependency_overrides[get_gasbuddy_service] = lambda: FailingGasBuddyService(
+        LibraryError("something else went wrong")
+    )
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        render_api_key="rnd_test_key", flaresolverr_service_id="srv-abc123"
+    )
+    fake_post = AsyncMock()
+    try:
+        with patch("httpx.AsyncClient.post", new=fake_post):
+            response = client.get("/api/v1/stations/search", params={"query": "60614"})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 502
+    fake_post.assert_not_called()
+
+
 class _FakeFlareSolverrResponse:
     """Stands in for httpx.Response — status_code and (for the Render
     restart call's own diagnostic logging) text are read by
@@ -218,12 +347,15 @@ def test_warmup_container_reports_not_awake_without_raising_when_unreachable():
     assert response.json() == {"awake": False}
 
 
-# --- Render redeploy-on-launch (optional, requires both settings) --------
-
-
-def test_warmup_container_does_not_call_render_when_credentials_are_unset():
+def test_warmup_container_never_triggers_a_render_redeploy_even_when_configured():
+    # Redeploying takes real time (45s+ for the new container to come
+    # up) — that cost is only worth paying reactively, when a real
+    # search actually gets blocked (see the redeploy tests above), never
+    # unconditionally on every app launch.
     app.dependency_overrides[get_settings] = lambda: Settings(
-        gasbuddy_solver_url="https://flaresolverr-example.onrender.com/v1"
+        gasbuddy_solver_url="https://flaresolverr-example.onrender.com/v1",
+        render_api_key="rnd_test_key",
+        flaresolverr_service_id="srv-abc123",
     )
     fake_post = AsyncMock()
     try:
@@ -241,113 +373,3 @@ def test_warmup_container_does_not_call_render_when_credentials_are_unset():
     assert response.status_code == 200
     assert response.json() == {"awake": True}
     fake_post.assert_not_called()
-
-
-def test_warmup_container_redeploys_the_render_service_when_configured():
-    app.dependency_overrides[get_settings] = lambda: Settings(
-        gasbuddy_solver_url="https://flaresolverr-example.onrender.com/v1",
-        render_api_key="rnd_test_key",
-        flaresolverr_service_id="srv-abc123",
-    )
-    fake_post = AsyncMock(return_value=_FakeFlareSolverrResponse(201))
-    fake_get = AsyncMock(return_value=_FakeFlareSolverrResponse(200))
-    try:
-        with (
-            patch("httpx.AsyncClient.post", new=fake_post),
-            patch("httpx.AsyncClient.get", new=fake_get),
-        ):
-            response = client.post("/api/v1/stations/warmup-container")
-    finally:
-        app.dependency_overrides.clear()
-
-    assert response.status_code == 200
-    assert response.json() == {"awake": True}
-    fake_post.assert_called_once_with(
-        "https://api.render.com/v1/services/srv-abc123/deploys",
-        headers={
-            "Authorization": "Bearer rnd_test_key",
-            "Content-Type": "application/json",
-        },
-        json={},
-    )
-    # Confirms it's a redeploy, not a same-container restart — a bare
-    # restart was tried first (see git history) and confirmed live NOT
-    # to be enough, unlike a fresh redeploy.
-    assert "deploys" in fake_post.call_args.args[0]
-
-
-def test_warmup_container_falls_back_to_a_single_ping_when_render_deploy_trigger_fails():
-    # The deploy-trigger call itself failing (bad key, wrong service ID,
-    # Render rate-limiting) means nothing new is coming up — waiting the
-    # long post-redeploy poll budget would only slow down every app
-    # launch for no benefit, so this must behave exactly like the
-    # unconfigured case.
-    app.dependency_overrides[get_settings] = lambda: Settings(
-        gasbuddy_solver_url="https://flaresolverr-example.onrender.com/v1",
-        render_api_key="rnd_test_key",
-        flaresolverr_service_id="srv-abc123",
-    )
-    fake_post = AsyncMock(return_value=_FakeFlareSolverrResponse(401))
-    fake_get = AsyncMock(return_value=_FakeFlareSolverrResponse(200))
-    try:
-        with (
-            patch("httpx.AsyncClient.post", new=fake_post),
-            patch("httpx.AsyncClient.get", new=fake_get),
-        ):
-            response = client.post("/api/v1/stations/warmup-container")
-    finally:
-        app.dependency_overrides.clear()
-
-    assert response.status_code == 200
-    assert response.json() == {"awake": True}
-    fake_get.assert_called_once()
-
-
-def test_warmup_container_polls_after_a_successful_redeploy_until_the_new_container_answers():
-    # A freshly redeployed container isn't back up instantly — this must
-    # keep polling (not give up after one failed attempt) within its
-    # post-redeploy budget. asyncio.sleep is patched to a no-op so the
-    # test doesn't actually wait out the real poll interval.
-    app.dependency_overrides[get_settings] = lambda: Settings(
-        gasbuddy_solver_url="https://flaresolverr-example.onrender.com/v1",
-        render_api_key="rnd_test_key",
-        flaresolverr_service_id="srv-abc123",
-    )
-    fake_post = AsyncMock(return_value=_FakeFlareSolverrResponse(202))
-    fake_get = AsyncMock(
-        side_effect=[_FakeFlareSolverrResponse(503), _FakeFlareSolverrResponse(200)]
-    )
-    try:
-        with (
-            patch("httpx.AsyncClient.post", new=fake_post),
-            patch("httpx.AsyncClient.get", new=fake_get),
-            patch("app.api.routes.stations.asyncio.sleep", new=AsyncMock()),
-        ):
-            response = client.post("/api/v1/stations/warmup-container")
-    finally:
-        app.dependency_overrides.clear()
-
-    assert response.status_code == 200
-    assert response.json() == {"awake": True}
-    assert fake_get.call_count == 2
-
-
-def test_warmup_container_reports_awake_without_raising_when_render_deploy_trigger_errors():
-    app.dependency_overrides[get_settings] = lambda: Settings(
-        gasbuddy_solver_url="https://flaresolverr-example.onrender.com/v1",
-        render_api_key="rnd_test_key",
-        flaresolverr_service_id="srv-abc123",
-    )
-    fake_post = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
-    fake_get = AsyncMock(return_value=_FakeFlareSolverrResponse(200))
-    try:
-        with (
-            patch("httpx.AsyncClient.post", new=fake_post),
-            patch("httpx.AsyncClient.get", new=fake_get),
-        ):
-            response = client.post("/api/v1/stations/warmup-container")
-    finally:
-        app.dependency_overrides.clear()
-
-    assert response.status_code == 200
-    assert response.json() == {"awake": True}

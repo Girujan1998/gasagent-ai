@@ -1,4 +1,3 @@
-import asyncio
 import time
 
 import httpx
@@ -12,79 +11,27 @@ from app.services.geocoding import GeocodingError
 
 router = APIRouter(prefix="/stations", tags=["stations"])
 
-# A fresh redeploy clears whatever's accumulated in FlareSolverr's
-# long-running Chrome process AND gets a new container from scratch
-# (plausibly a new egress IP, matching this session's IP-reputation
-# theory) — confirmed live that this succeeds where a same-container
-# *restart* (tried first, see git history) did not. Only worth waiting
-# this long when a redeploy was actually triggered; when it wasn't (not
-# configured, or the trigger call itself failed) there's nothing new
-# coming up, so a single ping is enough — same as before this feature
-# existed.
-REDEPLOY_POLL_BUDGET_SECONDS = 45.0
-REDEPLOY_POLL_INTERVAL_SECONDS = 3.0
+# Redeploying FlareSolverr (not just restarting it — confirmed live a
+# same-container restart alone wasn't enough) gets it a genuinely fresh
+# container, plausibly a new egress IP, clearing whatever Cloudflare-
+# facing state a stale container had accumulated. Triggered reactively,
+# only when a real gas search actually hits CloudflareBlocked — an
+# earlier version of this eagerly redeployed on every app launch
+# instead, adding a 45s+ poll wait to every cold open regardless of
+# whether the user ever searched for gas that session. This cooldown
+# stops a burst of failing requests, while one redeploy is already in
+# flight, from queuing up repeat redeploys behind it.
+FLARESOLVERR_REDEPLOY_COOLDOWN_SECONDS = 90.0
+
+_last_flaresolverr_redeploy_trigger = 0.0
 
 
-@router.get("/search", response_model=StationSearchResponse)
-async def search_stations(
-    query: str | None = Query(
-        None, description="City name or postal code to search near"
-    ),
-    lat: float | None = Query(None, description="Latitude of the current location"),
-    lon: float | None = Query(None, description="Longitude of the current location"),
-    limit: int = Query(10, ge=1, le=20),
-    cursor: str | None = Query(
-        None,
-        description=(
-            "Pagination cursor from a previous response's next_cursor. "
-            "When set, `lat`/`lon` (from that same response) must be passed "
-            "instead of `query`, so paging doesn't depend on re-geocoding."
-        ),
-    ),
-    service: GasBuddyService = Depends(get_gasbuddy_service),
-) -> StationSearchResponse:
-    """Return the nearest gas stations for a city, postal code, or GPS location."""
-    if not query and (lat is None or lon is None):
-        raise HTTPException(
-            status_code=400,
-            detail="Provide either `query` (city or postal code) or both `lat` and `lon`.",
-        )
-
-    try:
-        result = await service.search_nearest_stations(
-            query=query, lat=lat, lon=lon, limit=limit, cursor=cursor
-        )
-    except GeocodingError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except MissingSearchData as exc:
-        raise HTTPException(
-            status_code=400, detail="Missing search parameters."
-        ) from exc
-    except CloudflareBlocked as exc:
-        raise HTTPException(
-            status_code=502,
-            detail="GasBuddy is temporarily blocking automated requests. Try again shortly.",
-        ) from exc
-    except (LibraryError, APIError) as exc:
-        raise HTTPException(
-            status_code=502, detail=f"GasBuddy lookup failed: {exc}"
-        ) from exc
-
-    return StationSearchResponse(
-        results=result.stations,
-        next_cursor=result.next_cursor,
-        lat=result.lat,
-        lon=result.lon,
-    )
-
-
-async def _redeploy_flaresolverr_service(settings: Settings) -> bool:
+async def _trigger_flaresolverr_redeploy(settings: Settings) -> None:
     """Best-effort triggers a fresh redeploy of FlareSolverr's own Render
-    service (repulls/restarts the container from scratch — confirmed
-    live that this succeeds where a same-container *restart* alone did
-    not). Returns whether the deploy was actually accepted, so the
-    caller knows whether it's worth waiting for a new container to come
-    up versus just pinging the one that's already running.
+    service (not a same-container restart — confirmed live that a
+    restart alone doesn't help). Fire-and-forget: doesn't wait for the
+    new container to come up, since the search that triggered this has
+    already failed — this only gives the *next* attempt a better shot.
     """
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -105,25 +52,79 @@ async def _redeploy_flaresolverr_service(settings: Settings) -> bool:
             f"[flaresolverr] deploy trigger -> {response.status_code} "
             f"{response.text[:200]!r}"
         )
-        return response.status_code in (201, 202)
     except httpx.HTTPError as exc:
         print(f"[flaresolverr] deploy trigger failed: {exc!r}")
-        return False
 
 
-async def _wait_for_flaresolverr(base_url: str, poll_budget_seconds: float) -> bool:
-    deadline = time.monotonic() + poll_budget_seconds
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        while True:
-            try:
-                response = await client.get(base_url)
-                if response.status_code == 200:
-                    return True
-            except httpx.HTTPError:
-                pass
-            if time.monotonic() >= deadline:
-                return False
-            await asyncio.sleep(REDEPLOY_POLL_INTERVAL_SECONDS)
+async def _redeploy_flaresolverr_if_not_recently_triggered(settings: Settings) -> None:
+    global _last_flaresolverr_redeploy_trigger
+    if not (settings.render_api_key and settings.flaresolverr_service_id):
+        return
+
+    now = time.monotonic()
+    if now - _last_flaresolverr_redeploy_trigger < FLARESOLVERR_REDEPLOY_COOLDOWN_SECONDS:
+        return
+    # Set before awaiting the network call so concurrent failing
+    # requests arriving in the same moment don't all slip past this
+    # check and each trigger their own redeploy.
+    _last_flaresolverr_redeploy_trigger = now
+
+    await _trigger_flaresolverr_redeploy(settings)
+
+
+@router.get("/search", response_model=StationSearchResponse)
+async def search_stations(
+    query: str | None = Query(
+        None, description="City name or postal code to search near"
+    ),
+    lat: float | None = Query(None, description="Latitude of the current location"),
+    lon: float | None = Query(None, description="Longitude of the current location"),
+    limit: int = Query(10, ge=1, le=20),
+    cursor: str | None = Query(
+        None,
+        description=(
+            "Pagination cursor from a previous response's next_cursor. "
+            "When set, `lat`/`lon` (from that same response) must be passed "
+            "instead of `query`, so paging doesn't depend on re-geocoding."
+        ),
+    ),
+    service: GasBuddyService = Depends(get_gasbuddy_service),
+    settings: Settings = Depends(get_settings),
+) -> StationSearchResponse:
+    """Return the nearest gas stations for a city, postal code, or GPS location."""
+    if not query and (lat is None or lon is None):
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either `query` (city or postal code) or both `lat` and `lon`.",
+        )
+
+    try:
+        result = await service.search_nearest_stations(
+            query=query, lat=lat, lon=lon, limit=limit, cursor=cursor
+        )
+    except GeocodingError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except MissingSearchData as exc:
+        raise HTTPException(
+            status_code=400, detail="Missing search parameters."
+        ) from exc
+    except CloudflareBlocked as exc:
+        await _redeploy_flaresolverr_if_not_recently_triggered(settings)
+        raise HTTPException(
+            status_code=502,
+            detail="GasBuddy is temporarily blocking automated requests. Try again shortly.",
+        ) from exc
+    except (LibraryError, APIError) as exc:
+        raise HTTPException(
+            status_code=502, detail=f"GasBuddy lookup failed: {exc}"
+        ) from exc
+
+    return StationSearchResponse(
+        results=result.stations,
+        next_cursor=result.next_cursor,
+        lat=result.lat,
+        lon=result.lon,
+    )
 
 
 @router.post("/warmup-container", response_model=FlareSolverrWarmupResponse)
@@ -143,13 +144,13 @@ async def warmup_flaresolverr_container(
     challenge-solve itself, since that step can only happen by actually
     contacting GasBuddy.
 
-    When `render_api_key`/`flaresolverr_service_id` are configured, also
-    triggers a fresh redeploy of FlareSolverr's own Render service on
-    every launch — confirmed live that a same-container *restart* alone
-    was NOT enough, but a full redeploy (fresh container, plausibly a
-    new egress IP) succeeded where the same long-running container kept
-    failing. Falls back to a single lightweight ping when unconfigured,
-    matching this endpoint's original behavior.
+    Deliberately does NOT trigger a FlareSolverr redeploy either — an
+    earlier version of this did that unconditionally on every launch,
+    but that adds real latency (a 45s+ wait for the new container) to
+    every cold app open regardless of whether the user ever hits a
+    Cloudflare block that session. See `search_stations`'s
+    `CloudflareBlocked` handler for where that's triggered instead, only
+    when actually needed.
 
     Never raises — an unreachable/still-sleeping container is an
     expected, retryable state during startup, not an error.
@@ -161,11 +162,9 @@ async def warmup_flaresolverr_container(
         return FlareSolverrWarmupResponse(awake=True)
 
     base_url = solver_url.removesuffix("/v1").removesuffix("/v1/")
-
-    redeployed = False
-    if settings.render_api_key and settings.flaresolverr_service_id:
-        redeployed = await _redeploy_flaresolverr_service(settings)
-
-    poll_budget = REDEPLOY_POLL_BUDGET_SECONDS if redeployed else 0.0
-    awake = await _wait_for_flaresolverr(base_url, poll_budget)
-    return FlareSolverrWarmupResponse(awake=awake)
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.get(base_url)
+        return FlareSolverrWarmupResponse(awake=response.status_code == 200)
+    except httpx.HTTPError:
+        return FlareSolverrWarmupResponse(awake=False)
