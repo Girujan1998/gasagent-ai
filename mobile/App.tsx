@@ -27,6 +27,7 @@ import NotificationsScreen, {
 } from './src/screens/NotificationsScreen';
 import SplashScreen from './src/screens/SplashScreen';
 import {FavoritesProvider, useFavorites} from './src/store/FavoritesContext';
+import {LocationProvider} from './src/store/LocationContext';
 
 // This only waits on waking FlareSolverr's own container (a few seconds
 // up to ~20s cold), NOT a real GasBuddy challenge-solve (~55-60s) — an
@@ -200,10 +201,12 @@ function App(): React.JSX.Element {
 
   return (
     <FavoritesProvider>
-      <SafeAreaView style={styles.container}>
-        <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
-        <AppContent />
-      </SafeAreaView>
+      <LocationProvider>
+        <SafeAreaView style={styles.container}>
+          <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
+          <AppContent />
+        </SafeAreaView>
+      </LocationProvider>
     </FavoritesProvider>
   );
 }

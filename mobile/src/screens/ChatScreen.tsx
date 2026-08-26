@@ -23,6 +23,7 @@ import {
 } from '../api/client';
 import EvStationCard from '../components/EvStationCard';
 import StationCard from '../components/StationCard';
+import {useSharedLocation} from '../store/LocationContext';
 import {requestLocationPermission} from '../utils/location';
 
 // What survives a tab switch: the conversation so far, any error from the
@@ -116,6 +117,8 @@ function ChatScreen({
   gasTabLocation,
   evTabLocation,
 }: Props): React.JSX.Element {
+  const {location: sharedLocation, setLocation: setSharedLocation} =
+    useSharedLocation();
   const [messages, setMessages] = useState<ChatMessage[]>(
     persistedChat.messages,
   );
@@ -141,9 +144,12 @@ function ChatScreen({
   // search — recomputed on every send so sharing location mid-conversation
   // takes effect on the very next message. Gas and EV questions fall back
   // to their own tab's last search rather than sharing one fallback, since
-  // the two tabs can be searched at different places.
-  const gasLocation = gpsLocation ?? gasTabLocation ?? null;
-  const evLocation = gpsLocation ?? evTabLocation ?? null;
+  // the two tabs can be searched at different places. `sharedLocation` is
+  // the last resort — a location shared from Favorites (or any tab before
+  // either Gas or EV has ever been searched this session) still gives Chat
+  // something to work with instead of nothing.
+  const gasLocation = gpsLocation ?? gasTabLocation ?? sharedLocation ?? null;
+  const evLocation = gpsLocation ?? evTabLocation ?? sharedLocation ?? null;
 
   const handleShareLocation = async () => {
     setLocationError(null);
@@ -163,6 +169,7 @@ function ChatScreen({
           lon: position.coords.longitude,
         };
         setGpsLocation(nextGpsLocation);
+        setSharedLocation(nextGpsLocation);
         setLocating(false);
         onChatComplete({
           messages,

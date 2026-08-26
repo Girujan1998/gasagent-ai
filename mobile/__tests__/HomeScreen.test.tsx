@@ -2,7 +2,8 @@
  * @format
  */
 
-import React from 'react';
+import Geolocation from '@react-native-community/geolocation';
+import React, {useEffect} from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -21,6 +22,7 @@ import HomeScreen, {
   PersistedSearch,
 } from '../src/screens/HomeScreen';
 import {FavoritesProvider} from '../src/store/FavoritesContext';
+import {LocationProvider, useSharedLocation} from '../src/store/LocationContext';
 
 const healthResponse = {
   ok: true,
@@ -109,10 +111,12 @@ it('loads more stations when the Load More button is pressed', async () => {
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <HomeScreen
           persistedSearch={INITIAL_PERSISTED_SEARCH}
           onSearchComplete={() => {}}
         />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -150,10 +154,12 @@ it('pulling to refresh re-runs the same search and replaces the results', async 
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <HomeScreen
           persistedSearch={INITIAL_PERSISTED_SEARCH}
           onSearchComplete={() => {}}
         />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -198,10 +204,12 @@ it('keeps showing the existing results, uninterrupted, when a pull-to-refresh fa
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <HomeScreen
           persistedSearch={INITIAL_PERSISTED_SEARCH}
           onSearchComplete={() => {}}
         />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -249,10 +257,12 @@ it('shows a loading spinner while a location search is in flight, then replaces 
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <HomeScreen
           persistedSearch={INITIAL_PERSISTED_SEARCH}
           onSearchComplete={() => {}}
         />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -294,10 +304,12 @@ it('switches to the map view without making any extra API calls', async () => {
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <HomeScreen
           persistedSearch={INITIAL_PERSISTED_SEARCH}
           onSearchComplete={() => {}}
         />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -385,10 +397,12 @@ it('caps the map at 20 stations even when List view has loaded more via Load Mor
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <HomeScreen
           persistedSearch={INITIAL_PERSISTED_SEARCH}
           onSearchComplete={() => {}}
         />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -425,10 +439,12 @@ it('only fetches for the map\'s new area when "Search this area" is pressed, not
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <HomeScreen
           persistedSearch={INITIAL_PERSISTED_SEARCH}
           onSearchComplete={() => {}}
         />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -490,10 +506,12 @@ it('does not fetch again just because a brand filter narrows the visible results
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <HomeScreen
           persistedSearch={INITIAL_PERSISTED_SEARCH}
           onSearchComplete={() => {}}
         />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -547,10 +565,12 @@ it('caps total fetched stations at 40, requesting at most 20 per page, then hide
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <HomeScreen
           persistedSearch={INITIAL_PERSISTED_SEARCH}
           onSearchComplete={() => {}}
         />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -594,10 +614,12 @@ it('restores the first page from persisted state without refetching, dropping an
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <HomeScreen
           persistedSearch={persisted}
           onSearchComplete={onSearchComplete}
         />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -623,10 +645,12 @@ it('restores the first page from persisted state without refetching, dropping an
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <HomeScreen
           persistedSearch={persisted}
           onSearchComplete={onSearchComplete}
         />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -666,10 +690,12 @@ it('persists sort order and filter selections immediately, independent of any se
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <HomeScreen
           persistedSearch={persisted}
           onSearchComplete={onSearchComplete}
         />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -722,10 +748,12 @@ it('persists sort order and filter selections immediately, independent of any se
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <HomeScreen
           persistedSearch={persisted}
           onSearchComplete={onSearchComplete}
         />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -758,10 +786,12 @@ it('dismisses the keyboard when tapping outside the search bar, without requirin
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <HomeScreen
           persistedSearch={INITIAL_PERSISTED_SEARCH}
           onSearchComplete={jest.fn()}
         />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -777,4 +807,61 @@ it('dismisses the keyboard when tapping outside the search bar, without requirin
 
   expect(dismissSpy).toHaveBeenCalled();
   dismissSpy.mockRestore();
+});
+
+it('searches with a location shared from another tab in one tap, without asking for a fresh GPS fix', async () => {
+  // e.g. the user pressed the current-location pin on the EV tab first —
+  // Home should already show that location as ready to search, no need
+  // to press the pin here too. Mounted in two steps (like the real app's
+  // AppContent, whose LocationProvider survives a tab switch while each
+  // screen unmounts/remounts fresh) so Home's own first mount already
+  // sees the shared location, rather than racing its own mount-time
+  // initializer against the context update.
+  function SharesLocationFromAnotherTab() {
+    const {setLocation} = useSharedLocation();
+    useEffect(() => {
+      setLocation({lat: 43.36, lon: -80.31});
+    }, [setLocation]);
+    return null;
+  }
+
+  mockFetchSequence([healthResponse, stationsResponse(['Shell'], null)]);
+
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      <FavoritesProvider>
+        <LocationProvider>
+          <SharesLocationFromAnotherTab />
+        </LocationProvider>
+      </FavoritesProvider>,
+    );
+  });
+
+  await act(async () => {
+    renderer!.update(
+      <FavoritesProvider>
+        <LocationProvider>
+          <SharesLocationFromAnotherTab />
+          <HomeScreen
+            persistedSearch={INITIAL_PERSISTED_SEARCH}
+            onSearchComplete={jest.fn()}
+          />
+        </LocationProvider>
+      </FavoritesProvider>,
+    );
+  });
+
+  await act(async () => {
+    renderer!.root.findByProps({accessibilityLabel: 'Search'}).props.onPress();
+  });
+
+  expect(
+    (Geolocation.getCurrentPosition as jest.Mock).mock.calls,
+  ).toHaveLength(0);
+  expect(
+    renderer!.root
+      .findByType(FlatList)
+      .props.data.map((s: {name: string}) => s.name),
+  ).toEqual(['Shell']);
 });

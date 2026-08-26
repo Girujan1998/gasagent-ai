@@ -24,6 +24,7 @@ import {
   filterStationsByNetworks,
   networkOptionsFromStations,
 } from '../utils/evFilters';
+import {useSharedLocation} from '../store/LocationContext';
 
 const NO_MATCHING_FILTERS_MESSAGE =
   'No EV chargers match the selected filters.';
@@ -83,6 +84,7 @@ function EvScreen({
   persistedSearch,
   onSearchComplete,
 }: Props): React.JSX.Element {
+  const {location: sharedLocation} = useSharedLocation();
   const [stations, setStations] = useState<EvStation[]>(
     persistedSearch.stations,
   );
@@ -360,7 +362,16 @@ function EvScreen({
         <View>
           <LocationSearchBar
             onSearch={handleLocationSearch}
-            initialQuery={persistedSearch.query}
+            initialQuery={
+              persistedSearch.query ??
+              (sharedLocation
+                ? {
+                    type: 'coordinates',
+                    latitude: sharedLocation.lat,
+                    longitude: sharedLocation.lon,
+                  }
+                : null)
+            }
           />
 
           {hasSearched && stations.length > 0 && (

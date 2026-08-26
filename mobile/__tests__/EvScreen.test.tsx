@@ -19,6 +19,7 @@ import EvScreen, {
   INITIAL_PERSISTED_EV_SEARCH,
   PersistedEvSearch,
 } from '../src/screens/EvScreen';
+import {LocationProvider} from '../src/store/LocationContext';
 
 function evStationsResponse(names: string[], totalResults: number) {
   return {
@@ -116,10 +117,12 @@ it('loads more stations when the Load More button is pressed, replacing rather t
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <EvScreen
+      <LocationProvider>
+        <EvScreen
         persistedSearch={INITIAL_PERSISTED_EV_SEARCH}
         onSearchComplete={() => {}}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -161,10 +164,12 @@ it('pulling to refresh re-runs the same search and replaces the results', async 
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <EvScreen
+      <LocationProvider>
+        <EvScreen
         persistedSearch={INITIAL_PERSISTED_EV_SEARCH}
         onSearchComplete={() => {}}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -202,10 +207,12 @@ it('keeps showing the existing results, uninterrupted, when a pull-to-refresh fa
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <EvScreen
+      <LocationProvider>
+        <EvScreen
         persistedSearch={INITIAL_PERSISTED_EV_SEARCH}
         onSearchComplete={() => {}}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -242,10 +249,12 @@ it('shows a loading spinner while a location search is in flight, then replaces 
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <EvScreen
+      <LocationProvider>
+        <EvScreen
         persistedSearch={INITIAL_PERSISTED_EV_SEARCH}
         onSearchComplete={() => {}}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -280,10 +289,12 @@ it('fetches map data for a 30km radius using the resolved coordinates, not a sec
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <EvScreen
+      <LocationProvider>
+        <EvScreen
         persistedSearch={INITIAL_PERSISTED_EV_SEARCH}
         onSearchComplete={() => {}}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -326,10 +337,12 @@ it('keeps showing the existing map pins, uninterrupted, when the map-radius fetc
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <EvScreen
+      <LocationProvider>
+        <EvScreen
         persistedSearch={INITIAL_PERSISTED_EV_SEARCH}
         onSearchComplete={() => {}}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -384,10 +397,12 @@ it('recenters the map on a fresh search, but not on "Search this area"', async (
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <EvScreen
+      <LocationProvider>
+        <EvScreen
         persistedSearch={INITIAL_PERSISTED_EV_SEARCH}
         onSearchComplete={() => {}}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -430,10 +445,12 @@ it('switches to the map view without making any extra API calls', async () => {
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <EvScreen
+      <LocationProvider>
+        <EvScreen
         persistedSearch={INITIAL_PERSISTED_EV_SEARCH}
         onSearchComplete={() => {}}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -464,10 +481,12 @@ it('narrows both list and map results to stations matching an applied network fi
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <EvScreen
+      <LocationProvider>
+        <EvScreen
         persistedSearch={INITIAL_PERSISTED_EV_SEARCH}
         onSearchComplete={() => {}}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -525,10 +544,12 @@ it('shows a fallback message when no stations match the applied filters', async 
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <EvScreen
+      <LocationProvider>
+        <EvScreen
         persistedSearch={INITIAL_PERSISTED_EV_SEARCH}
         onSearchComplete={() => {}}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -564,10 +585,12 @@ it('caps total fetched stations at 40, targeting 20 more at a time, then hides L
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <EvScreen
+      <LocationProvider>
+        <EvScreen
         persistedSearch={INITIAL_PERSISTED_EV_SEARCH}
         onSearchComplete={() => {}}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -608,10 +631,12 @@ it('restores the first page from persisted state without refetching, dropping an
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <EvScreen
+      <LocationProvider>
+        <EvScreen
         persistedSearch={persisted}
         onSearchComplete={onSearchComplete}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -631,10 +656,12 @@ it('restores the first page from persisted state without refetching, dropping an
 
   await act(async () => {
     renderer = create(
-      <EvScreen
+      <LocationProvider>
+        <EvScreen
         persistedSearch={persisted}
         onSearchComplete={onSearchComplete}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -660,10 +687,12 @@ it('dismisses the keyboard when tapping outside the search bar, without requirin
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <EvScreen
+      <LocationProvider>
+        <EvScreen
         persistedSearch={INITIAL_PERSISTED_EV_SEARCH}
         onSearchComplete={jest.fn()}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 

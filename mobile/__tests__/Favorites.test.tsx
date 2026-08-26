@@ -4,7 +4,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Geolocation from '@react-native-community/geolocation';
-import React from 'react';
+import React, {useEffect} from 'react';
 import {FlatList} from 'react-native';
 import {act, create, ReactTestRenderer} from 'react-test-renderer';
 import {it, expect, jest, beforeEach} from '@jest/globals';
@@ -14,6 +14,7 @@ import StationCard from '../src/components/StationCard';
 import ReorderableFavoritesList from '../src/components/ReorderableFavoritesList';
 import FavoritesScreen from '../src/screens/FavoritesScreen';
 import {FavoritesProvider} from '../src/store/FavoritesContext';
+import {LocationProvider, useSharedLocation} from '../src/store/LocationContext';
 
 function makeStation(
   id: string,
@@ -65,7 +66,9 @@ it('adds and removes a station from favorites via the star button', async () => 
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <StationCard station={station} />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -112,7 +115,9 @@ it('hides distance until location is shared, then shows it', async () => {
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <FavoritesScreen />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -131,6 +136,51 @@ it('hides distance until location is shared, then shows it', async () => {
   expect(typeof list.props.data[0].distance_miles).toBe('number');
 });
 
+it('already shows distances from a location shared in another tab, without needing to share again here', async () => {
+  await AsyncStorage.setItem('gasaiagent:favorites', JSON.stringify([station]));
+
+  function SharesLocationFromAnotherTab() {
+    const {setLocation} = useSharedLocation();
+    useEffect(() => {
+      setLocation({lat: 41.95, lon: -87.65});
+    }, [setLocation]);
+    return null;
+  }
+
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      <FavoritesProvider>
+        <LocationProvider>
+          <SharesLocationFromAnotherTab />
+        </LocationProvider>
+      </FavoritesProvider>,
+    );
+  });
+
+  // Mounted in two steps (like the real app's AppContent, whose
+  // LocationProvider survives a tab switch while each screen
+  // unmounts/remounts fresh) so Favorites' own first mount already sees
+  // the shared location.
+  await act(async () => {
+    renderer!.update(
+      <FavoritesProvider>
+        <LocationProvider>
+          <SharesLocationFromAnotherTab />
+          <FavoritesScreen />
+        </LocationProvider>
+      </FavoritesProvider>,
+    );
+  });
+
+  const list = renderer!.root.findByType(FlatList);
+  expect(typeof list.props.data[0].distance_miles).toBe('number');
+  // No reason to ask again — the banner shouldn't even show.
+  expect(() =>
+    renderer!.root.findByProps({accessibilityLabel: 'Share your location'}),
+  ).toThrow();
+});
+
 it('hides the Order button when there are fewer than two favorites', async () => {
   await AsyncStorage.setItem('gasaiagent:favorites', JSON.stringify([station]));
 
@@ -138,7 +188,9 @@ it('hides the Order button when there are fewer than two favorites', async () =>
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <FavoritesScreen />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -159,7 +211,9 @@ it('switches to the drag-to-reorder list when Order is pressed, and back on Done
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <FavoritesScreen />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -206,7 +260,9 @@ it('persists a drag-to-reorder as the new favorites order', async () => {
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <FavoritesScreen />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -262,7 +318,9 @@ it('shows the same filter button as the Gas tab once there are favorites', async
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <FavoritesScreen />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -284,7 +342,9 @@ it('narrows favorites to the applied brand filter, and shows every brand unfilte
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <FavoritesScreen />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -325,7 +385,9 @@ it('shows a fallback message when the applied brand filter excludes every favori
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <FavoritesScreen />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -365,7 +427,9 @@ it('hides the filter button while reordering', async () => {
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <FavoritesScreen />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -400,7 +464,9 @@ it('pulling to refresh re-queries each favorite and updates its price', async ()
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <FavoritesScreen />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -438,7 +504,9 @@ it('leaves a favorite unchanged when its refresh lookup finds no matching statio
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <FavoritesScreen />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -472,7 +540,9 @@ it('skips the network entirely when no favorite has saved coordinates', async ()
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
+      <LocationProvider>
         <FavoritesScreen />
+      </LocationProvider>
       </FavoritesProvider>,
     );
   });

@@ -10,6 +10,7 @@ import {
 import Geolocation from '@react-native-community/geolocation';
 
 import {getLocationAutocomplete, LocationSuggestion} from '../api/client';
+import {useSharedLocation} from '../store/LocationContext';
 import {requestLocationPermission} from '../utils/location';
 
 const AUTOCOMPLETE_MIN_LENGTH = 3;
@@ -39,6 +40,15 @@ function initialLocationLabel(
   )}`;
 }
 
+function initialCoordinates(
+  initialQuery?: LocationQuery | null,
+): {latitude: number; longitude: number} | null {
+  if (initialQuery?.type !== 'coordinates') {
+    return null;
+  }
+  return {latitude: initialQuery.latitude, longitude: initialQuery.longitude};
+}
+
 // A human-readable label for a definite (non-null) LocationQuery — what
 // the user typed/selected for a text search, or its coordinates for a
 // "current location" one. Used wherever a search's location needs to be
@@ -51,11 +61,21 @@ export function locationQueryLabel(query: LocationQuery): string {
 }
 
 function LocationSearchBar({onSearch, initialQuery}: Props): React.JSX.Element {
+  const {setLocation: setSharedLocation} = useSharedLocation();
   const [query, setQuery] = useState(() => initialQueryText(initialQuery));
   const [locating, setLocating] = useState(false);
   const [locationLabel, setLocationLabel] = useState<string | null>(() =>
     initialLocationLabel(initialQuery),
   );
+  // The raw coordinates behind `locationLabel` — whether restored from a
+  // previous search this session or prefilled from a location shared in
+  // another tab — so the search icon can re-run a coordinates search
+  // without a fresh GPS fix when the text field is empty (see
+  // handleSearchPress below).
+  const [currentCoordinates, setCurrentCoordinates] = useState<{
+    latitude: number;
+    longitude: number;
+  } | null>(() => initialCoordinates(initialQuery));
   const [locationError, setLocationError] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<LocationSuggestion[]>([]);
 
@@ -132,15 +152,26 @@ function LocationSearchBar({onSearch, initialQuery}: Props): React.JSX.Element {
     setSuggestions([]);
   };
 
-  const handleTextSearch = () => {
+  // Runs a search from whatever's currently shown — typed text if there
+  // is any, otherwise the displayed location (if any), which may have
+  // arrived either from a previous search this session or from a
+  // location shared in another tab (see the `initialCoordinates` seed
+  // above). This is what makes reusing a shared location only a single
+  // tap: no fresh GPS fix needed, since the coordinates are already
+  // known.
+  const handleSearchPress = () => {
     const trimmed = query.trim();
-    if (!trimmed) {
+    if (trimmed) {
+      dismissSuggestions();
+      setLocationLabel(null);
+      setCurrentCoordinates(null);
+      setLocationError(null);
+      onSearch?.({type: 'text', value: trimmed});
       return;
     }
-    dismissSuggestions();
-    setLocationLabel(null);
-    setLocationError(null);
-    onSearch?.({type: 'text', value: trimmed});
+    if (currentCoordinates) {
+      onSearch?.({type: 'coordinates', ...currentCoordinates});
+    }
   };
 
   const handleSelectSuggestion = (suggestion: LocationSuggestion) => {
@@ -148,6 +179,7 @@ function LocationSearchBar({onSearch, initialQuery}: Props): React.JSX.Element {
     setQuery(suggestion.value);
     setSuggestions([]);
     setLocationLabel(null);
+    setCurrentCoordinates(null);
     setLocationError(null);
     onSearch?.({type: 'text', value: suggestion.value});
   };
@@ -168,6 +200,8 @@ function LocationSearchBar({onSearch, initialQuery}: Props): React.JSX.Element {
         const {latitude, longitude} = position.coords;
         setQuery('');
         setLocationLabel(`${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
+        setCurrentCoordinates({latitude, longitude});
+        setSharedLocation({lat: latitude, lon: longitude});
         onSearch?.({type: 'coordinates', latitude, longitude});
         setLocating(false);
       },
@@ -183,6 +217,7 @@ function LocationSearchBar({onSearch, initialQuery}: Props): React.JSX.Element {
     dismissSuggestions();
     setQuery('');
     setLocationLabel(null);
+    setCurrentCoordinates(null);
     setLocationError(null);
   };
 
@@ -199,7 +234,7 @@ function LocationSearchBar({onSearch, initialQuery}: Props): React.JSX.Element {
           placeholderTextColor="#999"
           value={query}
           onChangeText={setQuery}
-          onSubmitEditing={handleTextSearch}
+          onSubmitEditing={handleSearchPress}
           returnKeyType="search"
         />
         {showClear && (
@@ -213,7 +248,7 @@ function LocationSearchBar({onSearch, initialQuery}: Props): React.JSX.Element {
         )}
         <TouchableOpacity
           style={styles.iconButton}
-          onPress={handleTextSearch}
+          onPress={handleSearchPress}
           accessibilityLabel="Search">
           <Text style={styles.icon}>🔍</Text>
         </TouchableOpacity>

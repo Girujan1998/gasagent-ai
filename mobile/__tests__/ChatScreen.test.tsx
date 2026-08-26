@@ -3,7 +3,7 @@
  */
 
 import Geolocation from '@react-native-community/geolocation';
-import React, {useState} from 'react';
+import React, {useEffect, useState} from 'react';
 import {ActivityIndicator, Alert, FlatList, Text, TextInput} from 'react-native';
 import {act, create, ReactTestRenderer} from 'react-test-renderer';
 import {it, expect, jest, beforeAll, afterEach, afterAll} from '@jest/globals';
@@ -16,6 +16,7 @@ import ChatScreen, {
   PersistedChat,
 } from '../src/screens/ChatScreen';
 import {FavoritesProvider} from '../src/store/FavoritesContext';
+import {LocationProvider, useSharedLocation} from '../src/store/LocationContext';
 
 function mockGpsSuccess(lat: number, lon: number) {
   jest.mocked(Geolocation.getCurrentPosition).mockImplementation(success => {
@@ -167,12 +168,14 @@ function Harness({
     return null;
   }
   return (
-    <ChatScreen
-      persistedChat={persistedChat}
-      onChatComplete={setPersistedChat}
-      gasTabLocation={gasTabLocation}
-      evTabLocation={evTabLocation}
-    />
+    <LocationProvider>
+      <ChatScreen
+        persistedChat={persistedChat}
+        onChatComplete={setPersistedChat}
+        gasTabLocation={gasTabLocation}
+        evTabLocation={evTabLocation}
+      />
+    </LocationProvider>
   );
 }
 
@@ -180,12 +183,14 @@ it('shows an intro message when there is no conversation yet', async () => {
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <ChatScreen
+      <LocationProvider>
+        <ChatScreen
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={null}
         evTabLocation={null}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -196,12 +201,14 @@ it('disables Send until there is text to send', async () => {
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <ChatScreen
+      <LocationProvider>
+        <ChatScreen
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={null}
         evTabLocation={null}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -221,12 +228,14 @@ it('sends the message, shows the reply, and clears the input', async () => {
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <ChatScreen
+      <LocationProvider>
+        <ChatScreen
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={null}
         evTabLocation={null}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -250,12 +259,14 @@ it('shows a typing indicator while waiting for the reply', async () => {
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <ChatScreen
+      <LocationProvider>
+        <ChatScreen
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={null}
         evTabLocation={null}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -280,7 +291,8 @@ it('sends the full conversation history, not just the newest message', async () 
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <ChatScreen
+      <LocationProvider>
+        <ChatScreen
         persistedChat={{
           messages: [
             {role: 'user', content: 'First'},
@@ -293,7 +305,8 @@ it('sends the full conversation history, not just the newest message', async () 
         onChatComplete={jest.fn()}
         gasTabLocation={null}
         evTabLocation={null}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -323,12 +336,14 @@ it('keeps the user message and shows an error when the reply fails, without losi
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <ChatScreen
+      <LocationProvider>
+        <ChatScreen
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={onChatComplete}
         gasTabLocation={null}
         evTabLocation={null}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -386,7 +401,8 @@ it('scrolls to the bottom instantly once the list lays out, so a returning tab s
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <ChatScreen
+      <LocationProvider>
+        <ChatScreen
         persistedChat={{
           messages: [
             {role: 'user', content: 'First'},
@@ -399,7 +415,8 @@ it('scrolls to the bottom instantly once the list lays out, so a returning tab s
         onChatComplete={jest.fn()}
         gasTabLocation={null}
         evTabLocation={null}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -419,12 +436,14 @@ it('shows the "share your location" banner when neither source is available', as
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <ChatScreen
+      <LocationProvider>
+        <ChatScreen
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={null}
         evTabLocation={null}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -441,12 +460,14 @@ it('shows the "using last searched location" banner when only the Gas tab has on
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <ChatScreen
+      <LocationProvider>
+        <ChatScreen
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={{lat: 41.9, lon: -87.6}}
         evTabLocation={null}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -461,12 +482,14 @@ it('hides the banner once the user shares a fresh GPS location', async () => {
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <ChatScreen
+      <LocationProvider>
+        <ChatScreen
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={null}
         evTabLocation={null}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -567,12 +590,14 @@ it('includes the Gas-tab location in the request body when no GPS fix has been s
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <ChatScreen
+      <LocationProvider>
+        <ChatScreen
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={{lat: 41.9, lon: -87.6}}
         evTabLocation={null}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -594,12 +619,14 @@ it('includes the EV-tab location in the request body when no GPS fix has been sh
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <ChatScreen
+      <LocationProvider>
+        <ChatScreen
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={{lat: 41.9, lon: -87.6}}
         evTabLocation={{lat: 10.0, lon: 20.0}}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -622,12 +649,14 @@ it('prefers a freshly shared GPS location over the Gas-tab fallback in the reque
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <ChatScreen
+      <LocationProvider>
+        <ChatScreen
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={{lat: 41.9, lon: -87.6}}
         evTabLocation={null}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -646,6 +675,45 @@ it('prefers a freshly shared GPS location over the Gas-tab fallback in the reque
   expect(body.gas_location).toEqual({lat: 1.0, lon: 2.0});
 });
 
+it('falls back to a location shared from another tab when neither Gas-tab, EV-tab, nor a fresh GPS fix is available', async () => {
+  // e.g. the user shared their location from Favorites — Chat never saw
+  // it directly (no gasTabLocation/evTabLocation, no GPS share here),
+  // but it's still the best location available.
+  function SharesLocationFromAnotherTab() {
+    const {setLocation} = useSharedLocation();
+    useEffect(() => {
+      setLocation({lat: 5, lon: 6});
+    }, [setLocation]);
+    return null;
+  }
+
+  const fetchMock = jest.fn(() => Promise.resolve(chatResponse('ok')));
+  global.fetch = fetchMock as unknown as typeof fetch;
+
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      <LocationProvider>
+        <SharesLocationFromAnotherTab />
+        <ChatScreen
+          persistedChat={INITIAL_PERSISTED_CHAT}
+          onChatComplete={jest.fn()}
+          gasTabLocation={null}
+          evTabLocation={null}
+        />
+      </LocationProvider>,
+    );
+  });
+
+  await typeAndSend(renderer!, 'gas near me?');
+
+  const init = (fetchMock.mock.calls[0] as unknown[])[1] as RequestInit;
+  const body = JSON.parse(init.body as string) as {
+    gas_location?: {lat: number; lon: number};
+  };
+  expect(body.gas_location).toEqual({lat: 5, lon: 6});
+});
+
 it('omits location from the request body when neither source is available', async () => {
   const fetchMock = jest.fn(() => Promise.resolve(chatResponse('ok')));
   global.fetch = fetchMock as unknown as typeof fetch;
@@ -653,12 +721,14 @@ it('omits location from the request body when neither source is available', asyn
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <ChatScreen
+      <LocationProvider>
+        <ChatScreen
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={null}
         evTabLocation={null}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -688,12 +758,14 @@ it('renders station cards when the reply includes gas/EV stations', async () => 
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
-        <ChatScreen
+        <LocationProvider>
+          <ChatScreen
           persistedChat={INITIAL_PERSISTED_CHAT}
           onChatComplete={jest.fn()}
           gasTabLocation={null}
           evTabLocation={null}
         />
+        </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -712,12 +784,14 @@ it('renders no cards for a plain text-only reply', async () => {
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <ChatScreen
+      <LocationProvider>
+        <ChatScreen
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={null}
         evTabLocation={null}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -774,12 +848,14 @@ it('never sends station card data back to the backend on the next message', asyn
   await act(async () => {
     renderer = create(
       <FavoritesProvider>
-        <ChatScreen
+        <LocationProvider>
+          <ChatScreen
           persistedChat={INITIAL_PERSISTED_CHAT}
           onChatComplete={jest.fn()}
           gasTabLocation={null}
           evTabLocation={null}
         />
+        </LocationProvider>
       </FavoritesProvider>,
     );
   });
@@ -815,12 +891,14 @@ it('does not show the New Chat button when there is no conversation yet', async 
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <ChatScreen
+      <LocationProvider>
+        <ChatScreen
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={null}
         evTabLocation={null}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -839,12 +917,14 @@ it('shows New Chat once a conversation exists, and clears everything when confir
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <ChatScreen
+      <LocationProvider>
+        <ChatScreen
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={onChatComplete}
         gasTabLocation={null}
         evTabLocation={null}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 
@@ -883,12 +963,14 @@ it('keeps the conversation when New Chat is cancelled', async () => {
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <ChatScreen
+      <LocationProvider>
+        <ChatScreen
         persistedChat={INITIAL_PERSISTED_CHAT}
         onChatComplete={jest.fn()}
         gasTabLocation={null}
         evTabLocation={null}
-      />,
+      />
+      </LocationProvider>,
     );
   });
 

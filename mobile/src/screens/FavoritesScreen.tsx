@@ -10,6 +10,7 @@ import {
 
 import {GasStation, searchNearestStations} from '../api/client';
 import {useFavorites} from '../store/FavoritesContext';
+import {useSharedLocation} from '../store/LocationContext';
 import {haversineMiles} from '../utils/distance';
 import {requestLocationPermission} from '../utils/location';
 import FilterControl from '../components/FilterControl';
@@ -32,12 +33,18 @@ const NO_FAVORITES_MESSAGE =
 
 function FavoritesScreen(): React.JSX.Element {
   const {favorites, reorderFavorites, updateFavoritePrices} = useFavorites();
+  const {location: sharedLocation, setLocation: setSharedLocation} =
+    useSharedLocation();
   const [reordering, setReordering] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  // Seeded from a location already shared in another tab, if any — pure
+  // client-side distance sorting below, no extra network call, so there's
+  // no reason to make the user press "share location" again here just to
+  // get the same coordinates a moment after sharing them elsewhere.
   const [currentLocation, setCurrentLocation] = useState<{
     lat: number;
     lon: number;
-  } | null>(null);
+  } | null>(sharedLocation);
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
   // Same filter concept as the Gas tab's FilterControl — a fuel-grade pair
@@ -65,10 +72,12 @@ function FavoritesScreen(): React.JSX.Element {
 
     Geolocation.getCurrentPosition(
       position => {
-        setCurrentLocation({
+        const nextLocation = {
           lat: position.coords.latitude,
           lon: position.coords.longitude,
-        });
+        };
+        setCurrentLocation(nextLocation);
+        setSharedLocation(nextLocation);
         setLocating(false);
       },
       err => {

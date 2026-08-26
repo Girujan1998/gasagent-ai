@@ -10,12 +10,27 @@ import {it, expect, jest, beforeEach, afterEach} from '@jest/globals';
 import LocationSearchBar, {
   LocationQuery,
 } from '../src/components/LocationSearchBar';
+import {LocationProvider} from '../src/store/LocationContext';
 
 type FetchResult = {ok: boolean; json: () => Promise<unknown>};
 type FetchFn = (...args: unknown[]) => Promise<FetchResult>;
 
 function getFetchMock(): jest.Mock<FetchFn> {
   return global.fetch as unknown as jest.Mock<FetchFn>;
+}
+
+// LocationSearchBar reads/writes the app-wide shared-location context (see
+// LocationContext.tsx) — every render needs this wrapper, the same as
+// App.tsx itself provides it at the top level.
+function renderSearchBar(props?: {
+  onSearch?: (query: LocationQuery) => void;
+  initialQuery?: LocationQuery | null;
+}) {
+  return create(
+    <LocationProvider>
+      <LocationSearchBar {...props} />
+    </LocationProvider>,
+  );
 }
 
 // The debounce is 300ms — waiting this out inside act() lets any pending
@@ -44,7 +59,7 @@ it('submits a typed city/postal code search', async () => {
   const onSearch = jest.fn<(query: LocationQuery) => void>();
   let renderer: ReactTestRenderer;
   await act(async () => {
-    renderer = create(<LocationSearchBar onSearch={onSearch} />);
+    renderer = renderSearchBar({onSearch});
   });
 
   const input = renderer!.root.findByType(TextInput);
@@ -66,9 +81,7 @@ it('submits a typed city/postal code search', async () => {
 it('restores a persisted text query on mount and can clear it', async () => {
   let renderer: ReactTestRenderer;
   await act(async () => {
-    renderer = create(
-      <LocationSearchBar initialQuery={{type: 'text', value: '60614'}} />,
-    );
+    renderer = renderSearchBar({initialQuery: {type: 'text', value: '60614'}});
   });
   await flushDebounce();
 
@@ -107,9 +120,7 @@ it('does not show the autocomplete dropdown just from restoring a persisted quer
 
   let renderer: ReactTestRenderer;
   await act(async () => {
-    renderer = create(
-      <LocationSearchBar initialQuery={{type: 'text', value: 'Cambridge'}} />,
-    );
+    renderer = renderSearchBar({initialQuery: {type: 'text', value: 'Cambridge'}});
   });
   await flushDebounce();
 
@@ -124,11 +135,7 @@ it('does not show the autocomplete dropdown just from restoring a persisted quer
 it('restores a persisted coordinate query as a location label on mount', async () => {
   let renderer: ReactTestRenderer;
   await act(async () => {
-    renderer = create(
-      <LocationSearchBar
-        initialQuery={{type: 'coordinates', latitude: 41.85, longitude: -87.65}}
-      />,
-    );
+    renderer = renderSearchBar({initialQuery: {type: 'coordinates', latitude: 41.85, longitude: -87.65}});
   });
 
   expect(
@@ -139,7 +146,7 @@ it('restores a persisted coordinate query as a location label on mount', async (
 it('does not show the clear button when there is nothing to clear', async () => {
   let renderer: ReactTestRenderer;
   await act(async () => {
-    renderer = create(<LocationSearchBar />);
+    renderer = renderSearchBar();
   });
 
   expect(() =>
@@ -164,7 +171,7 @@ it('fetches suggestions once 3 characters have been entered, after a debounce', 
 
   let renderer: ReactTestRenderer;
   await act(async () => {
-    renderer = create(<LocationSearchBar />);
+    renderer = renderSearchBar();
   });
 
   const input = renderer!.root.findByType(TextInput);
@@ -205,7 +212,7 @@ it('selects a suggestion by filling the input and searching immediately', async 
 
   let renderer: ReactTestRenderer;
   await act(async () => {
-    renderer = create(<LocationSearchBar onSearch={onSearch} />);
+    renderer = renderSearchBar({onSearch});
   });
 
   const input = renderer!.root.findByType(TextInput);
@@ -244,7 +251,7 @@ it('hides the suggestions dropdown after clearing the search', async () => {
 
   let renderer: ReactTestRenderer;
   await act(async () => {
-    renderer = create(<LocationSearchBar />);
+    renderer = renderSearchBar();
   });
 
   const input = renderer!.root.findByType(TextInput);
@@ -272,6 +279,32 @@ it('hides the suggestions dropdown after clearing the search', async () => {
   ).toThrow();
 });
 
+it('searches with a restored coordinate query in one tap, without a fresh GPS fix', async () => {
+  // Mirrors a prefill from a location shared in another tab: the search
+  // bar mounts already showing a location (via initialQuery), but the
+  // user still has to press search once to actually run it here — the
+  // whole point being that pressing search reuses these coordinates
+  // rather than triggering Geolocation again.
+  const onSearch = jest.fn<(query: LocationQuery) => void>();
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = renderSearchBar({
+      onSearch,
+      initialQuery: {type: 'coordinates', latitude: 43.36, longitude: -80.31},
+    });
+  });
+
+  await act(async () => {
+    renderer!.root.findByProps({accessibilityLabel: 'Search'}).props.onPress();
+  });
+
+  expect(onSearch).toHaveBeenCalledWith({
+    type: 'coordinates',
+    latitude: 43.36,
+    longitude: -80.31,
+  });
+});
+
 it('does not let a stale autocomplete response reopen the dropdown after a manual search', async () => {
   const fetchMock = getFetchMock();
   fetchMock.mockResolvedValue({
@@ -290,7 +323,7 @@ it('does not let a stale autocomplete response reopen the dropdown after a manua
 
   let renderer: ReactTestRenderer;
   await act(async () => {
-    renderer = create(<LocationSearchBar onSearch={onSearch} />);
+    renderer = renderSearchBar({onSearch});
   });
 
   const input = renderer!.root.findByType(TextInput);

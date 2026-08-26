@@ -33,6 +33,7 @@ import {
   filterStationsByBrands,
 } from '../utils/brandFilter';
 import {sortStations, SortOption} from '../utils/sortStations';
+import {useSharedLocation} from '../store/LocationContext';
 
 // Pagination is manual (a "Load More" button, not infinite scroll) and
 // capped: once this many stations have been fetched, unfiltered, from the
@@ -99,6 +100,7 @@ function HomeScreen({
   persistedSearch,
   onSearchComplete,
 }: Props): React.JSX.Element {
+  const {location: sharedLocation} = useSharedLocation();
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
 
@@ -340,7 +342,16 @@ function HomeScreen({
         <View>
           <LocationSearchBar
             onSearch={handleLocationSearch}
-            initialQuery={persistedSearch.query}
+            initialQuery={
+              persistedSearch.query ??
+              (sharedLocation
+                ? {
+                    type: 'coordinates',
+                    latitude: sharedLocation.lat,
+                    longitude: sharedLocation.lon,
+                  }
+                : null)
+            }
           />
 
           {hasSearched && stations.length > 0 && (
