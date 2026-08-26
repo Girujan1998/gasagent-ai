@@ -12,16 +12,17 @@ from app.services.geocoding import GeocodingError
 
 router = APIRouter(prefix="/stations", tags=["stations"])
 
-# A restart clears whatever's accumulated in FlareSolverr's long-running
-# Chrome process (confirmed live: a manual restart-then-search succeeded
-# where an already-awake container kept failing) — but the new container
-# takes real time to come back up and get past its own next Cloudflare
-# challenge, so only wait this long when a restart was actually
-# triggered. When it wasn't (not configured, or the restart call itself
-# failed) there's nothing new to wait for — a single ping is enough,
-# same as before this feature existed.
-RESTART_POLL_BUDGET_SECONDS = 25.0
-RESTART_POLL_INTERVAL_SECONDS = 3.0
+# A fresh redeploy clears whatever's accumulated in FlareSolverr's
+# long-running Chrome process AND gets a new container from scratch
+# (plausibly a new egress IP, matching this session's IP-reputation
+# theory) — confirmed live that this succeeds where a same-container
+# *restart* (tried first, see git history) did not. Only worth waiting
+# this long when a redeploy was actually triggered; when it wasn't (not
+# configured, or the trigger call itself failed) there's nothing new
+# coming up, so a single ping is enough — same as before this feature
+# existed.
+REDEPLOY_POLL_BUDGET_SECONDS = 45.0
+REDEPLOY_POLL_INTERVAL_SECONDS = 3.0
 
 
 @router.get("/search", response_model=StationSearchResponse)
@@ -77,31 +78,36 @@ async def search_stations(
     )
 
 
-async def _restart_flaresolverr_service(settings: Settings) -> bool:
-    """Best-effort triggers a restart of FlareSolverr's own Render service
-    (not a rebuild — reapplies the same deploy, just with a fresh
-    process). Returns whether the restart was actually accepted, so the
+async def _redeploy_flaresolverr_service(settings: Settings) -> bool:
+    """Best-effort triggers a fresh redeploy of FlareSolverr's own Render
+    service (repulls/restarts the container from scratch — confirmed
+    live that this succeeds where a same-container *restart* alone did
+    not). Returns whether the deploy was actually accepted, so the
     caller knows whether it's worth waiting for a new container to come
-    back up versus just pinging the one that's already running.
+    up versus just pinging the one that's already running.
     """
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
-                f"https://api.render.com/v1/services/{settings.flaresolverr_service_id}/restart",
-                headers={"Authorization": f"Bearer {settings.render_api_key}"},
+                f"https://api.render.com/v1/services/{settings.flaresolverr_service_id}/deploys",
+                headers={
+                    "Authorization": f"Bearer {settings.render_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={},
             )
         # print rather than `logging` — see gemini_client.py's own
         # comment on why; this call is otherwise silent (best-effort by
         # design), so without this there's no way to tell a bad
         # key/service ID or a Render-side rejection apart from the
-        # restart simply not helping.
+        # redeploy simply not helping.
         print(
-            f"[flaresolverr] restart request -> {response.status_code} "
+            f"[flaresolverr] deploy trigger -> {response.status_code} "
             f"{response.text[:200]!r}"
         )
-        return response.status_code == 200
+        return response.status_code in (201, 202)
     except httpx.HTTPError as exc:
-        print(f"[flaresolverr] restart request failed: {exc!r}")
+        print(f"[flaresolverr] deploy trigger failed: {exc!r}")
         return False
 
 
@@ -117,7 +123,7 @@ async def _wait_for_flaresolverr(base_url: str, poll_budget_seconds: float) -> b
                 pass
             if time.monotonic() >= deadline:
                 return False
-            await asyncio.sleep(RESTART_POLL_INTERVAL_SECONDS)
+            await asyncio.sleep(REDEPLOY_POLL_INTERVAL_SECONDS)
 
 
 @router.post("/warmup-container", response_model=FlareSolverrWarmupResponse)
@@ -138,13 +144,12 @@ async def warmup_flaresolverr_container(
     contacting GasBuddy.
 
     When `render_api_key`/`flaresolverr_service_id` are configured, also
-    triggers a restart of FlareSolverr's own Render service on every
-    launch — confirmed live that a fresh restart (not just an
-    already-awake container) can succeed where the same container kept
-    failing, plausibly because its browser-automation process
-    accumulates memory/process cruft across many solves. Falls back to
-    a single lightweight ping when unconfigured, matching this
-    endpoint's original behavior.
+    triggers a fresh redeploy of FlareSolverr's own Render service on
+    every launch — confirmed live that a same-container *restart* alone
+    was NOT enough, but a full redeploy (fresh container, plausibly a
+    new egress IP) succeeded where the same long-running container kept
+    failing. Falls back to a single lightweight ping when unconfigured,
+    matching this endpoint's original behavior.
 
     Never raises — an unreachable/still-sleeping container is an
     expected, retryable state during startup, not an error.
@@ -157,10 +162,10 @@ async def warmup_flaresolverr_container(
 
     base_url = solver_url.removesuffix("/v1").removesuffix("/v1/")
 
-    restarted = False
+    redeployed = False
     if settings.render_api_key and settings.flaresolverr_service_id:
-        restarted = await _restart_flaresolverr_service(settings)
+        redeployed = await _redeploy_flaresolverr_service(settings)
 
-    poll_budget = RESTART_POLL_BUDGET_SECONDS if restarted else 0.0
+    poll_budget = REDEPLOY_POLL_BUDGET_SECONDS if redeployed else 0.0
     awake = await _wait_for_flaresolverr(base_url, poll_budget)
     return FlareSolverrWarmupResponse(awake=awake)

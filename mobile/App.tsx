@@ -38,16 +38,18 @@ import {FavoritesProvider, useFavorites} from './src/store/FavoritesContext';
 // challenge-solve itself — this bound only needs margin over a
 // container wake, not a full solve.
 //
-// The backend also best-effort restarts FlareSolverr's own Render
-// service on every launch (confirmed live: a fresh restart can succeed
-// where an already-awake container kept failing) and then polls for the
-// new container to answer, which can itself take up to ~35s — this must
-// stay comfortably above that, or the app would proceed before the
-// backend's own warmup call even finishes. Not indefinite, though — EV
-// search and Chat don't depend on FlareSolverr at all, so there's no
-// reason to strand the user if it's genuinely crashed rather than just
-// cold (Render can take a couple of minutes to notice and restart it).
-const WARMUP_TIMEOUT_MS = 45000;
+// The backend also best-effort triggers a fresh redeploy of
+// FlareSolverr's own Render service on every launch (confirmed live: a
+// same-container restart alone wasn't enough, but a full redeploy
+// succeeded where an already-awake container kept failing) and then
+// polls for the new container to answer, which can itself take up to
+// ~55s — this must stay comfortably above that, or the app would
+// proceed before the backend's own warmup call even finishes. Not
+// indefinite, though — EV search and Chat don't depend on FlareSolverr
+// at all, so there's no reason to strand the user if it's genuinely
+// crashed rather than just cold (Render can take a couple of minutes to
+// notice and restart it).
+const WARMUP_TIMEOUT_MS = 65000;
 
 function ActiveScreen({
   activeTab,
