@@ -214,3 +214,132 @@ def test_warmup_container_reports_not_awake_without_raising_when_unreachable():
     # never surfaced as an HTTP error.
     assert response.status_code == 200
     assert response.json() == {"awake": False}
+
+
+# --- Render restart-on-launch (optional, requires both settings) ----------
+
+
+def test_warmup_container_does_not_call_render_when_credentials_are_unset():
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        gasbuddy_solver_url="https://flaresolverr-example.onrender.com/v1"
+    )
+    fake_post = AsyncMock()
+    try:
+        with (
+            patch("httpx.AsyncClient.post", new=fake_post),
+            patch(
+                "httpx.AsyncClient.get",
+                new=AsyncMock(return_value=_FakeFlareSolverrResponse(200)),
+            ),
+        ):
+            response = client.post("/api/v1/stations/warmup-container")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {"awake": True}
+    fake_post.assert_not_called()
+
+
+def test_warmup_container_restarts_the_render_service_when_configured():
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        gasbuddy_solver_url="https://flaresolverr-example.onrender.com/v1",
+        render_api_key="rnd_test_key",
+        flaresolverr_service_id="srv-abc123",
+    )
+    fake_post = AsyncMock(return_value=_FakeFlareSolverrResponse(200))
+    fake_get = AsyncMock(return_value=_FakeFlareSolverrResponse(200))
+    try:
+        with (
+            patch("httpx.AsyncClient.post", new=fake_post),
+            patch("httpx.AsyncClient.get", new=fake_get),
+        ):
+            response = client.post("/api/v1/stations/warmup-container")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {"awake": True}
+    fake_post.assert_called_once_with(
+        "https://api.render.com/v1/services/srv-abc123/restart",
+        headers={"Authorization": "Bearer rnd_test_key"},
+    )
+    # Confirms it restarts, not redeploys — a full rebuild would be far
+    # too slow to trigger on every app launch.
+    assert "restart" in fake_post.call_args.args[0]
+
+
+def test_warmup_container_falls_back_to_a_single_ping_when_render_restart_fails():
+    # The restart call itself failing (bad key, wrong service ID, Render
+    # rate-limiting) means nothing new is coming up — waiting the long
+    # post-restart poll budget would only slow down every app launch for
+    # no benefit, so this must behave exactly like the unconfigured case.
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        gasbuddy_solver_url="https://flaresolverr-example.onrender.com/v1",
+        render_api_key="rnd_test_key",
+        flaresolverr_service_id="srv-abc123",
+    )
+    fake_post = AsyncMock(return_value=_FakeFlareSolverrResponse(401))
+    fake_get = AsyncMock(return_value=_FakeFlareSolverrResponse(200))
+    try:
+        with (
+            patch("httpx.AsyncClient.post", new=fake_post),
+            patch("httpx.AsyncClient.get", new=fake_get),
+        ):
+            response = client.post("/api/v1/stations/warmup-container")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {"awake": True}
+    fake_get.assert_called_once()
+
+
+def test_warmup_container_polls_after_a_successful_restart_until_the_new_container_answers():
+    # A freshly restarted container isn't back up instantly — this must
+    # keep polling (not give up after one failed attempt) within its
+    # post-restart budget. asyncio.sleep is patched to a no-op so the
+    # test doesn't actually wait out the real poll interval.
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        gasbuddy_solver_url="https://flaresolverr-example.onrender.com/v1",
+        render_api_key="rnd_test_key",
+        flaresolverr_service_id="srv-abc123",
+    )
+    fake_post = AsyncMock(return_value=_FakeFlareSolverrResponse(200))
+    fake_get = AsyncMock(
+        side_effect=[_FakeFlareSolverrResponse(503), _FakeFlareSolverrResponse(200)]
+    )
+    try:
+        with (
+            patch("httpx.AsyncClient.post", new=fake_post),
+            patch("httpx.AsyncClient.get", new=fake_get),
+            patch("app.api.routes.stations.asyncio.sleep", new=AsyncMock()),
+        ):
+            response = client.post("/api/v1/stations/warmup-container")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {"awake": True}
+    assert fake_get.call_count == 2
+
+
+def test_warmup_container_reports_awake_without_raising_when_render_restart_call_errors():
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        gasbuddy_solver_url="https://flaresolverr-example.onrender.com/v1",
+        render_api_key="rnd_test_key",
+        flaresolverr_service_id="srv-abc123",
+    )
+    fake_post = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+    fake_get = AsyncMock(return_value=_FakeFlareSolverrResponse(200))
+    try:
+        with (
+            patch("httpx.AsyncClient.post", new=fake_post),
+            patch("httpx.AsyncClient.get", new=fake_get),
+        ):
+            response = client.post("/api/v1/stations/warmup-container")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {"awake": True}

@@ -76,7 +76,7 @@ it('lets the user into the app after the warmup timeout, even if the container n
   expect(renderer!.root.findAllByType(BottomNavBar)).toHaveLength(0);
 
   await act(async () => {
-    jest.advanceTimersByTime(30000);
+    jest.advanceTimersByTime(45000);
   });
 
   expect(renderer!.root.findAllByType(BottomNavBar)).toHaveLength(1);

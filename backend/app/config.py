@@ -26,6 +26,15 @@ class Settings(BaseSettings):
     # env var to at least this value on its own deploy — this setting
     # alone doesn't help if FlareSolverr's own cap is still lower.
     gasbuddy_timeout_ms: int = 120000
+    # Render API credentials for restarting the FlareSolverr service on
+    # app-launch warmup — confirmed live that a fresh restart (not just
+    # waking an already-running container) can succeed where a merely-
+    # awake one keeps failing, plausibly because FlareSolverr's browser
+    # automation accumulates memory/process cruft over many requests.
+    # Both empty means warmup falls back to just pinging the container's
+    # existing health check without restarting it.
+    render_api_key: str = ""
+    flaresolverr_service_id: str = ""
     # Kept configurable rather than hardcoded — the available models and
     # their free-tier quotas change over time (confirmed live:
     # gemini-2.5-flash, an earlier default here, is no longer offered to

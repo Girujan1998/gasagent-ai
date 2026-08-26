@@ -1,3 +1,6 @@
+import asyncio
+import time
+
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from py_gasbuddy import APIError, CloudflareBlocked, LibraryError, MissingSearchData
@@ -8,6 +11,17 @@ from app.services.gasbuddy_client import GasBuddyService, get_gasbuddy_service
 from app.services.geocoding import GeocodingError
 
 router = APIRouter(prefix="/stations", tags=["stations"])
+
+# A restart clears whatever's accumulated in FlareSolverr's long-running
+# Chrome process (confirmed live: a manual restart-then-search succeeded
+# where an already-awake container kept failing) — but the new container
+# takes real time to come back up and get past its own next Cloudflare
+# challenge, so only wait this long when a restart was actually
+# triggered. When it wasn't (not configured, or the restart call itself
+# failed) there's nothing new to wait for — a single ping is enough,
+# same as before this feature existed.
+RESTART_POLL_BUDGET_SECONDS = 25.0
+RESTART_POLL_INTERVAL_SECONDS = 3.0
 
 
 @router.get("/search", response_model=StationSearchResponse)
@@ -63,6 +77,39 @@ async def search_stations(
     )
 
 
+async def _restart_flaresolverr_service(settings: Settings) -> bool:
+    """Best-effort triggers a restart of FlareSolverr's own Render service
+    (not a rebuild — reapplies the same deploy, just with a fresh
+    process). Returns whether the restart was actually accepted, so the
+    caller knows whether it's worth waiting for a new container to come
+    back up versus just pinging the one that's already running.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"https://api.render.com/v1/services/{settings.flaresolverr_service_id}/restart",
+                headers={"Authorization": f"Bearer {settings.render_api_key}"},
+            )
+        return response.status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
+async def _wait_for_flaresolverr(base_url: str, poll_budget_seconds: float) -> bool:
+    deadline = time.monotonic() + poll_budget_seconds
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        while True:
+            try:
+                response = await client.get(base_url)
+                if response.status_code == 200:
+                    return True
+            except httpx.HTTPError:
+                pass
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(RESTART_POLL_INTERVAL_SECONDS)
+
+
 @router.post("/warmup-container", response_model=FlareSolverrWarmupResponse)
 async def warmup_flaresolverr_container(
     settings: Settings = Depends(get_settings),
@@ -80,6 +127,15 @@ async def warmup_flaresolverr_container(
     challenge-solve itself, since that step can only happen by actually
     contacting GasBuddy.
 
+    When `render_api_key`/`flaresolverr_service_id` are configured, also
+    triggers a restart of FlareSolverr's own Render service on every
+    launch — confirmed live that a fresh restart (not just an
+    already-awake container) can succeed where the same container kept
+    failing, plausibly because its browser-automation process
+    accumulates memory/process cruft across many solves. Falls back to
+    a single lightweight ping when unconfigured, matching this
+    endpoint's original behavior.
+
     Never raises — an unreachable/still-sleeping container is an
     expected, retryable state during startup, not an error.
     """
@@ -90,9 +146,11 @@ async def warmup_flaresolverr_container(
         return FlareSolverrWarmupResponse(awake=True)
 
     base_url = solver_url.removesuffix("/v1").removesuffix("/v1/")
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            response = await client.get(base_url)
-        return FlareSolverrWarmupResponse(awake=response.status_code == 200)
-    except httpx.HTTPError:
-        return FlareSolverrWarmupResponse(awake=False)
+
+    restarted = False
+    if settings.render_api_key and settings.flaresolverr_service_id:
+        restarted = await _restart_flaresolverr_service(settings)
+
+    poll_budget = RESTART_POLL_BUDGET_SECONDS if restarted else 0.0
+    awake = await _wait_for_flaresolverr(base_url, poll_budget)
+    return FlareSolverrWarmupResponse(awake=awake)
