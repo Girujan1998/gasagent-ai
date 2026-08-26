@@ -139,11 +139,13 @@ def test_search_forwards_cursor_and_coordinates_for_next_page():
 
 
 class _FakeFlareSolverrResponse:
-    """Stands in for httpx.Response — only status_code is ever read by
+    """Stands in for httpx.Response — status_code and (for the Render
+    restart call's own diagnostic logging) text are read by
     warmup_flaresolverr_container."""
 
-    def __init__(self, status_code: int):
+    def __init__(self, status_code: int, text: str = ""):
         self.status_code = status_code
+        self.text = text
 
 
 def test_warmup_container_reports_awake_with_no_solver_configured_and_makes_no_call():

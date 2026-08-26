@@ -90,8 +90,18 @@ async def _restart_flaresolverr_service(settings: Settings) -> bool:
                 f"https://api.render.com/v1/services/{settings.flaresolverr_service_id}/restart",
                 headers={"Authorization": f"Bearer {settings.render_api_key}"},
             )
+        # print rather than `logging` — see gemini_client.py's own
+        # comment on why; this call is otherwise silent (best-effort by
+        # design), so without this there's no way to tell a bad
+        # key/service ID or a Render-side rejection apart from the
+        # restart simply not helping.
+        print(
+            f"[flaresolverr] restart request -> {response.status_code} "
+            f"{response.text[:200]!r}"
+        )
         return response.status_code == 200
-    except httpx.HTTPError:
+    except httpx.HTTPError as exc:
+        print(f"[flaresolverr] restart request failed: {exc!r}")
         return False
 
 
