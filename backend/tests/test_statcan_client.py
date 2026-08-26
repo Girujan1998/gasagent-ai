@@ -112,3 +112,25 @@ async def test_reuses_the_cached_trend_without_a_second_request():
         await service.latest_trend()
 
     assert fake_post.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_retries_on_the_next_call_after_a_failure_instead_of_caching_it():
+    # A transient failure must not get cached for the full
+    # CACHE_TTL_SECONDS window — every Canadian forecast would otherwise
+    # silently see "no trend" for hours after one bad request, with no
+    # way for it to recover on its own before the cache expired.
+    fake_post = AsyncMock(
+        side_effect=[
+            httpx.ConnectError("boom"),
+            _FakeStatCanResponse(_payload(169.4, 175.5, "2026-06-01", "2026-07-01")),
+        ]
+    )
+    with patch("httpx.AsyncClient.post", new=fake_post):
+        service = StatCanService()
+        first = await service.latest_trend()
+        second = await service.latest_trend()
+
+    assert first is None
+    assert second is not None
+    assert fake_post.call_count == 2

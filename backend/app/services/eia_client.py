@@ -81,7 +81,12 @@ class EiaService:
                 return trend
 
         trend = await self._fetch()
-        _cache = (time.monotonic(), trend)
+        # Only a successful fetch is cached — a transient failure (a
+        # network blip, EIA briefly unavailable) must retry on the very
+        # next call rather than silently suppressing every US forecast
+        # for the full CACHE_TTL_SECONDS window.
+        if trend is not None:
+            _cache = (time.monotonic(), trend)
         return trend
 
     async def _fetch(self) -> NationalTrend | None:
@@ -100,7 +105,12 @@ class EiaService:
                 response = await client.get(EIA_URL, params=params)
                 response.raise_for_status()
                 payload = response.json()
-        except (httpx.HTTPError, ValueError):
+        except (httpx.HTTPError, ValueError) as exc:
+            # print rather than `logging` — see gemini_client.py's own
+            # comment on why. Distinguishes "no key configured" (the
+            # expected, common case) from a real failure of a configured
+            # key/request in Render's logs.
+            print(f"[eia] request failed: {exc!r}")
             return None
 
         return _parse_trend(payload)

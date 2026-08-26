@@ -67,10 +67,20 @@ class CountryLookupService:
                 response.raise_for_status()
                 data = response.json()
         except (httpx.HTTPError, ValueError) as exc:
+            # print rather than `logging` — see gemini_client.py's own
+            # comment on why. A failure here is otherwise silent (the
+            # caller just falls back to "no regional trend"), so without
+            # this there's no way to tell a genuine Nominatim outage
+            # apart from this specific deploy's IP/User-Agent getting
+            # rate-limited or blocked by their shared public instance —
+            # the same shape of problem this app already has with
+            # GasBuddy's Cloudflare protection.
+            print(f"[country_lookup] Nominatim request failed: {exc!r}")
             raise CountryLookupError(f"Reverse geocoding failed: {exc}") from exc
 
         country_code = (data.get("address") or {}).get("country_code")
         country_code = country_code.lower() if country_code else None
+        print(f"[country_lookup] resolved ({grid_lat}, {grid_lon}) -> {country_code!r}")
         _cache[key] = (time.monotonic(), country_code)
         return country_code
 

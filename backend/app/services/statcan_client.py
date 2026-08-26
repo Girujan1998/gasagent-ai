@@ -69,7 +69,12 @@ class StatCanService:
                 return trend
 
         trend = await self._fetch()
-        _cache = (time.monotonic(), trend)
+        # Only a successful fetch is cached — a transient failure (a
+        # network blip, StatCan briefly unavailable) must retry on the
+        # very next call rather than silently suppressing every
+        # Canadian forecast for the full CACHE_TTL_SECONDS window.
+        if trend is not None:
+            _cache = (time.monotonic(), trend)
         return trend
 
     async def _fetch(self) -> NationalTrend | None:
@@ -79,10 +84,19 @@ class StatCanService:
                 response = await client.post(STATCAN_URL, json=body)
                 response.raise_for_status()
                 payload = response.json()
-        except (httpx.HTTPError, ValueError):
+        except (httpx.HTTPError, ValueError) as exc:
+            # print rather than `logging` — see gemini_client.py's own
+            # comment on why. This result gets cached for
+            # CACHE_TTL_SECONDS (12h) — a transient failure here
+            # otherwise silently suppresses every Canadian forecast for
+            # that whole window with no visible cause.
+            print(f"[statcan] request failed: {exc!r}")
             return None
 
-        return _parse_trend(payload)
+        trend = _parse_trend(payload)
+        if trend is None:
+            print(f"[statcan] got a response but couldn't parse a trend from it: {payload!r}")
+        return trend
 
 
 def get_statcan_service() -> StatCanService:

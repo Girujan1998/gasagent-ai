@@ -115,3 +115,25 @@ async def test_reuses_the_cached_trend_without_a_second_request():
         await service.latest_trend()
 
     assert fake_get.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_retries_on_the_next_call_after_a_failure_instead_of_caching_it():
+    # A transient failure must not get cached for the full
+    # CACHE_TTL_SECONDS window — every US forecast would otherwise
+    # silently see "no trend" for hours after one bad request, with no
+    # way for it to recover on its own before the cache expired.
+    fake_get = AsyncMock(
+        side_effect=[
+            httpx.ConnectError("boom"),
+            _FakeEiaResponse(_payload(3.85, 3.79, "2026-08-11", "2026-08-04")),
+        ]
+    )
+    with patch("httpx.AsyncClient.get", new=fake_get):
+        service = EiaService()
+        first = await service.latest_trend()
+        second = await service.latest_trend()
+
+    assert first is None
+    assert second is not None
+    assert fake_get.call_count == 2
