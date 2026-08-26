@@ -1,3 +1,4 @@
+import asyncio
 import time
 
 import httpx
@@ -20,8 +21,15 @@ router = APIRouter(prefix="/stations", tags=["stations"])
 # instead, adding a 45s+ poll wait to every cold open regardless of
 # whether the user ever searched for gas that session. This cooldown
 # stops a burst of failing requests, while one redeploy is already in
-# flight, from queuing up repeat redeploys behind it.
+# flight, from queuing up repeat redeploys behind it. The poll budget
+# below is how long a *blocked search* itself waits for the new
+# container to answer before retrying — the container coming up is
+# quick (~20s observed live); the retry's own Cloudflare challenge-solve
+# is the slower, unbounded part, governed separately by
+# `gasbuddy_timeout_ms`.
 FLARESOLVERR_REDEPLOY_COOLDOWN_SECONDS = 90.0
+REDEPLOY_POLL_BUDGET_SECONDS = 45.0
+REDEPLOY_POLL_INTERVAL_SECONDS = 3.0
 
 _last_flaresolverr_redeploy_trigger = 0.0
 
@@ -29,9 +37,7 @@ _last_flaresolverr_redeploy_trigger = 0.0
 async def _trigger_flaresolverr_redeploy(settings: Settings) -> None:
     """Best-effort triggers a fresh redeploy of FlareSolverr's own Render
     service (not a same-container restart — confirmed live that a
-    restart alone doesn't help). Fire-and-forget: doesn't wait for the
-    new container to come up, since the search that triggered this has
-    already failed — this only gives the *next* attempt a better shot.
+    restart alone doesn't help).
     """
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -72,6 +78,60 @@ async def _redeploy_flaresolverr_if_not_recently_triggered(settings: Settings) -
     await _trigger_flaresolverr_redeploy(settings)
 
 
+async def _wait_for_flaresolverr(base_url: str, poll_budget_seconds: float) -> None:
+    """Polls FlareSolverr's own lightweight health check until it
+    answers (or the budget runs out) — just enough to give the
+    redeployed container's new process time to come up before the
+    retry, not to wait for anything GasBuddy-specific (that's a
+    separate cost paid by the retry's own request).
+    """
+    deadline = time.monotonic() + poll_budget_seconds
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        while True:
+            try:
+                response = await client.get(base_url)
+                if response.status_code == 200:
+                    return
+            except httpx.HTTPError:
+                pass
+            if time.monotonic() >= deadline:
+                return
+            await asyncio.sleep(REDEPLOY_POLL_INTERVAL_SECONDS)
+
+
+async def _retry_search_after_flaresolverr_redeploy(
+    service: GasBuddyService, settings: Settings, search_kwargs: dict
+):
+    """Called the first time a search hits CloudflareBlocked. Triggers a
+    FlareSolverr redeploy, waits for the new container to come back up,
+    then retries the search exactly once — the caller only ever sees
+    this as extra loading time, never the original block error, unless
+    the retry also fails (or nothing's configured to redeploy at all).
+
+    Raises HTTPException in both of those cases; only returns normally
+    on a successful retry.
+    """
+    if not (settings.render_api_key and settings.flaresolverr_service_id):
+        raise HTTPException(
+            status_code=502,
+            detail="GasBuddy is temporarily blocking automated requests. Try again shortly.",
+        )
+
+    await _redeploy_flaresolverr_if_not_recently_triggered(settings)
+
+    solver_url = settings.gasbuddy_solver_url
+    if solver_url:
+        base_url = solver_url.removesuffix("/v1").removesuffix("/v1/")
+        await _wait_for_flaresolverr(base_url, REDEPLOY_POLL_BUDGET_SECONDS)
+
+    try:
+        return await service.search_nearest_stations(**search_kwargs)
+    except (CloudflareBlocked, LibraryError, APIError) as exc:
+        raise HTTPException(
+            status_code=502, detail="Failed to obtain gas results."
+        ) from exc
+
+
 @router.get("/search", response_model=StationSearchResponse)
 async def search_stations(
     query: str | None = Query(
@@ -98,22 +158,29 @@ async def search_stations(
             detail="Provide either `query` (city or postal code) or both `lat` and `lon`.",
         )
 
+    search_kwargs = {
+        "query": query,
+        "lat": lat,
+        "lon": lon,
+        "limit": limit,
+        "cursor": cursor,
+    }
+
     try:
-        result = await service.search_nearest_stations(
-            query=query, lat=lat, lon=lon, limit=limit, cursor=cursor
-        )
+        result = await service.search_nearest_stations(**search_kwargs)
     except GeocodingError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except MissingSearchData as exc:
         raise HTTPException(
             status_code=400, detail="Missing search parameters."
         ) from exc
-    except CloudflareBlocked as exc:
-        await _redeploy_flaresolverr_if_not_recently_triggered(settings)
-        raise HTTPException(
-            status_code=502,
-            detail="GasBuddy is temporarily blocking automated requests. Try again shortly.",
-        ) from exc
+    except CloudflareBlocked:
+        # Deliberately not re-raised with `from exc` here — the caller
+        # sees either a successful retry or one of two clean error
+        # messages, never this original exception's own detail.
+        result = await _retry_search_after_flaresolverr_redeploy(
+            service, settings, search_kwargs
+        )
     except (LibraryError, APIError) as exc:
         raise HTTPException(
             status_code=502, detail=f"GasBuddy lookup failed: {exc}"
@@ -148,9 +215,9 @@ async def warmup_flaresolverr_container(
     earlier version of this did that unconditionally on every launch,
     but that adds real latency (a 45s+ wait for the new container) to
     every cold app open regardless of whether the user ever hits a
-    Cloudflare block that session. See `search_stations`'s
-    `CloudflareBlocked` handler for where that's triggered instead, only
-    when actually needed.
+    Cloudflare block that session. See `search_stations`'s handling of
+    `CloudflareBlocked` (`_retry_search_after_flaresolverr_redeploy`)
+    for where that's triggered instead, only when actually needed.
 
     Never raises — an unreachable/still-sleeping container is an
     expected, retryable state during startup, not an error.
