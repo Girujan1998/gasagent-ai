@@ -84,7 +84,8 @@ function EvScreen({
   persistedSearch,
   onSearchComplete,
 }: Props): React.JSX.Element {
-  const {location: sharedLocation} = useSharedLocation();
+  const {location: sharedLocation, setManualSearchLocation} =
+    useSharedLocation();
   const [stations, setStations] = useState<EvStation[]>(
     persistedSearch.stations,
   );
@@ -226,6 +227,12 @@ function EvScreen({
       setStations(nextStations);
       setTotalResults(nextTotalResults);
       searchLocationRef.current = searchLocation;
+      // A manual text search's resolved location still counts as "the
+      // shared location" for other tabs, just at lower priority than an
+      // actual GPS share (see LocationContext.tsx) — a coordinates-type
+      // query already published itself via setSharedGpsLocation when the
+      // fix was taken, so this is a no-op for that case.
+      setManualSearchLocation(searchLocation);
 
       setMapLoading(true);
       setMapError(null);

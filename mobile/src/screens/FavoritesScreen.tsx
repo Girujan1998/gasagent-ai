@@ -33,8 +33,7 @@ const NO_FAVORITES_MESSAGE =
 
 function FavoritesScreen(): React.JSX.Element {
   const {favorites, reorderFavorites, updateFavoritePrices} = useFavorites();
-  const {location: sharedLocation, setLocation: setSharedLocation} =
-    useSharedLocation();
+  const {location: sharedLocation, setSharedGpsLocation} = useSharedLocation();
   const [reordering, setReordering] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   // Seeded from a location already shared in another tab, if any — pure
@@ -77,7 +76,7 @@ function FavoritesScreen(): React.JSX.Element {
           lon: position.coords.longitude,
         };
         setCurrentLocation(nextLocation);
-        setSharedLocation(nextLocation);
+        setSharedGpsLocation(nextLocation);
         setLocating(false);
       },
       err => {

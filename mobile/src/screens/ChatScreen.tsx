@@ -117,8 +117,7 @@ function ChatScreen({
   gasTabLocation,
   evTabLocation,
 }: Props): React.JSX.Element {
-  const {location: sharedLocation, setLocation: setSharedLocation} =
-    useSharedLocation();
+  const {location: sharedLocation, setSharedGpsLocation} = useSharedLocation();
   const [messages, setMessages] = useState<ChatMessage[]>(
     persistedChat.messages,
   );
@@ -169,7 +168,7 @@ function ChatScreen({
           lon: position.coords.longitude,
         };
         setGpsLocation(nextGpsLocation);
-        setSharedLocation(nextGpsLocation);
+        setSharedGpsLocation(nextGpsLocation);
         setLocating(false);
         onChatComplete({
           messages,

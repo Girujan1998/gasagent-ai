@@ -818,10 +818,10 @@ it('searches with a location shared from another tab in one tap, without asking 
   // sees the shared location, rather than racing its own mount-time
   // initializer against the context update.
   function SharesLocationFromAnotherTab() {
-    const {setLocation} = useSharedLocation();
+    const {setSharedGpsLocation} = useSharedLocation();
     useEffect(() => {
-      setLocation({lat: 43.36, lon: -80.31});
-    }, [setLocation]);
+      setSharedGpsLocation({lat: 43.36, lon: -80.31});
+    }, [setSharedGpsLocation]);
     return null;
   }
 
@@ -864,4 +864,112 @@ it('searches with a location shared from another tab in one tap, without asking 
       .findByType(FlatList)
       .props.data.map((s: {name: string}) => s.name),
   ).toEqual(['Shell']);
+});
+
+// Reports every value the shared location context takes on, in order —
+// lets a test observe what Home published to it without needing another
+// screen mounted to read it back.
+function LocationHistoryRecorder({
+  onChange,
+}: {
+  onChange: (history: ({lat: number; lon: number} | null)[]) => void;
+}): null {
+  const {location} = useSharedLocation();
+  const historyRef = React.useRef<({lat: number; lon: number} | null)[]>([]);
+  React.useEffect(() => {
+    historyRef.current = [...historyRef.current, location];
+    onChange(historyRef.current);
+  }, [location, onChange]);
+  return null;
+}
+
+it('publishes a manual search\'s resolved location as the shared location for other tabs', async () => {
+  mockFetchSequence([healthResponse, stationsResponse(['Shell'], null)]);
+  let history: ({lat: number; lon: number} | null)[] = [];
+
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      <FavoritesProvider>
+        <LocationProvider>
+          <LocationHistoryRecorder onChange={h => (history = h)} />
+          <HomeScreen
+            persistedSearch={INITIAL_PERSISTED_SEARCH}
+            onSearchComplete={jest.fn()}
+          />
+        </LocationProvider>
+      </FavoritesProvider>,
+    );
+  });
+
+  await search(renderer!, 'Chicago');
+
+  // stationsResponse resolves to lat: 41.85, lon: -87.65 regardless of
+  // the query text — that's what a manual search publishes, since it's
+  // the backend's own geocoded location for "Chicago", not the query
+  // string itself.
+  expect(history[history.length - 1]).toEqual({lat: 41.85, lon: -87.65});
+
+  await act(async () => {
+    renderer!.unmount();
+  });
+});
+
+it('keeps a GPS-shared location as the shared one, ignoring a later manual search in the same tab', async () => {
+  mockFetchSequence([
+    healthResponse,
+    stationsResponse(['Shell'], null), // manual search below
+  ]);
+  jest.mocked(Geolocation.getCurrentPosition).mockImplementation(success => {
+    success({
+      coords: {
+        latitude: 1.0,
+        longitude: 2.0,
+        altitude: null,
+        accuracy: 0,
+        altitudeAccuracy: null,
+        heading: null,
+        speed: null,
+      },
+      timestamp: 0,
+    });
+  });
+  let history: ({lat: number; lon: number} | null)[] = [];
+
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      <FavoritesProvider>
+        <LocationProvider>
+          <LocationHistoryRecorder onChange={h => (history = h)} />
+          <HomeScreen
+            persistedSearch={INITIAL_PERSISTED_SEARCH}
+            onSearchComplete={jest.fn()}
+          />
+        </LocationProvider>
+      </FavoritesProvider>,
+    );
+  });
+
+  await act(async () => {
+    renderer!.root
+      .findByProps({accessibilityLabel: 'Use current location'})
+      .props.onPress();
+  });
+  expect(history[history.length - 1]).toEqual({lat: 1.0, lon: 2.0});
+
+  await act(async () => {
+    renderer!.root.findByType(TextInput).props.onChangeText('Chicago');
+  });
+  await act(async () => {
+    renderer!.root.findByProps({accessibilityLabel: 'Search'}).props.onPress();
+  });
+
+  // The manual search after the GPS share must not have overwritten it —
+  // the shared value stays at the GPS coordinates.
+  expect(history[history.length - 1]).toEqual({lat: 1.0, lon: 2.0});
+
+  await act(async () => {
+    renderer!.unmount();
+  });
 });

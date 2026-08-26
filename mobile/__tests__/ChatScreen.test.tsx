@@ -680,10 +680,10 @@ it('falls back to a location shared from another tab when neither Gas-tab, EV-ta
   // it directly (no gasTabLocation/evTabLocation, no GPS share here),
   // but it's still the best location available.
   function SharesLocationFromAnotherTab() {
-    const {setLocation} = useSharedLocation();
+    const {setSharedGpsLocation} = useSharedLocation();
     useEffect(() => {
-      setLocation({lat: 5, lon: 6});
-    }, [setLocation]);
+      setSharedGpsLocation({lat: 5, lon: 6});
+    }, [setSharedGpsLocation]);
     return null;
   }
 

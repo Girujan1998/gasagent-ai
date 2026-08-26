@@ -61,7 +61,7 @@ export function locationQueryLabel(query: LocationQuery): string {
 }
 
 function LocationSearchBar({onSearch, initialQuery}: Props): React.JSX.Element {
-  const {setLocation: setSharedLocation} = useSharedLocation();
+  const {setSharedGpsLocation} = useSharedLocation();
   const [query, setQuery] = useState(() => initialQueryText(initialQuery));
   const [locating, setLocating] = useState(false);
   const [locationLabel, setLocationLabel] = useState<string | null>(() =>
@@ -201,7 +201,7 @@ function LocationSearchBar({onSearch, initialQuery}: Props): React.JSX.Element {
         setQuery('');
         setLocationLabel(`${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
         setCurrentCoordinates({latitude, longitude});
-        setSharedLocation({lat: latitude, lon: longitude});
+        setSharedGpsLocation({lat: latitude, lon: longitude});
         onSearch?.({type: 'coordinates', latitude, longitude});
         setLocating(false);
       },

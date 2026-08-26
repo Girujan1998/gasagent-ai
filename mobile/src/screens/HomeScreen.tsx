@@ -100,7 +100,8 @@ function HomeScreen({
   persistedSearch,
   onSearchComplete,
 }: Props): React.JSX.Element {
-  const {location: sharedLocation} = useSharedLocation();
+  const {location: sharedLocation, setManualSearchLocation} =
+    useSharedLocation();
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
 
@@ -222,6 +223,12 @@ function HomeScreen({
       setStations(response.results);
       nextCursorRef.current = response.next_cursor;
       searchLocationRef.current = searchLocation;
+      // A manual text search's resolved location still counts as "the
+      // shared location" for other tabs, just at lower priority than an
+      // actual GPS share (see LocationContext.tsx) — a coordinates-type
+      // query already published itself via setSharedGpsLocation when the
+      // fix was taken, so this is a no-op for that case.
+      setManualSearchLocation(searchLocation);
       onSearchComplete(prev => ({
         ...prev,
         hasSearched: true,

@@ -140,10 +140,10 @@ it('already shows distances from a location shared in another tab, without needi
   await AsyncStorage.setItem('gasaiagent:favorites', JSON.stringify([station]));
 
   function SharesLocationFromAnotherTab() {
-    const {setLocation} = useSharedLocation();
+    const {setSharedGpsLocation} = useSharedLocation();
     useEffect(() => {
-      setLocation({lat: 41.95, lon: -87.65});
-    }, [setLocation]);
+      setSharedGpsLocation({lat: 41.95, lon: -87.65});
+    }, [setSharedGpsLocation]);
     return null;
   }
 

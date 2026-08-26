@@ -19,7 +19,7 @@ import EvScreen, {
   INITIAL_PERSISTED_EV_SEARCH,
   PersistedEvSearch,
 } from '../src/screens/EvScreen';
-import {LocationProvider} from '../src/store/LocationContext';
+import {LocationProvider, useSharedLocation} from '../src/store/LocationContext';
 
 function evStationsResponse(names: string[], totalResults: number) {
   return {
@@ -707,4 +707,53 @@ it('dismisses the keyboard when tapping outside the search bar, without requirin
 
   expect(dismissSpy).toHaveBeenCalled();
   dismissSpy.mockRestore();
+});
+
+// Reports every value the shared location context takes on, in order —
+// lets a test observe what EvScreen published to it without needing
+// another screen mounted to read it back.
+function LocationHistoryRecorder({
+  onChange,
+}: {
+  onChange: (history: ({lat: number; lon: number} | null)[]) => void;
+}): null {
+  const {location} = useSharedLocation();
+  const historyRef = React.useRef<({lat: number; lon: number} | null)[]>([]);
+  React.useEffect(() => {
+    historyRef.current = [...historyRef.current, location];
+    onChange(historyRef.current);
+  }, [location, onChange]);
+  return null;
+}
+
+it("publishes a manual search's resolved location as the shared location for other tabs", async () => {
+  mockFetchSequence([
+    evStationsResponse(['Zap'], 1), // initial list search
+    evStationsResponse(['Zap'], 1), // initial map-radius fetch
+  ]);
+  let history: ({lat: number; lon: number} | null)[] = [];
+
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      <LocationProvider>
+        <LocationHistoryRecorder onChange={h => (history = h)} />
+        <EvScreen
+          persistedSearch={INITIAL_PERSISTED_EV_SEARCH}
+          onSearchComplete={jest.fn()}
+        />
+      </LocationProvider>,
+    );
+  });
+
+  await search(renderer!, 'Chicago');
+
+  // evStationsResponse resolves to lat: 41.85, lon: -87.65 regardless of
+  // the query text — the backend's own geocoded location, not the query
+  // string itself.
+  expect(history[history.length - 1]).toEqual({lat: 41.85, lon: -87.65});
+
+  await act(async () => {
+    renderer!.unmount();
+  });
 });
