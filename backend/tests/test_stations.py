@@ -148,8 +148,7 @@ def test_search_forwards_cursor_and_coordinates_for_next_page():
 
 
 class FailingGasBuddyService:
-    """Always raises, on every call — for cases where the retry is
-    expected to fail too, or isn't expected to happen at all."""
+    """Always raises, on every call."""
 
     def __init__(self, exc: Exception):
         self._exc = exc
@@ -160,63 +159,39 @@ class FailingGasBuddyService:
         raise self._exc
 
 
-class FailingThenSucceedingGasBuddyService:
-    """Raises on the first call, succeeds on every call after — models a
-    search that gets blocked, then works once FlareSolverr has been
-    redeployed."""
-
-    def __init__(self, exc: Exception):
-        self._exc = exc
-        self.call_count = 0
-
-    async def search_nearest_stations(self, *, lat=None, lon=None, **_kwargs):
-        self.call_count += 1
-        if self.call_count == 1:
-            raise self._exc
-        return StationSearchResult(
-            stations=[make_station("123")],
-            next_cursor=None,
-            lat=lat if lat is not None else 41.85,
-            lon=lon if lon is not None else -87.65,
-        )
-
-
 # --- FlareSolverr redeploy triggered reactively by a blocked search -------
 #
 # An earlier version of this eagerly redeployed FlareSolverr on every app
 # launch instead (see git history) — moved here so it only happens when
-# actually needed. A later version returned the block error immediately
-# after firing off the redeploy (see git history again) — now it instead
-# waits for the redeploy and retries once inline, so the caller only
-# ever sees the original block as extra loading time unless the retry
-# also fails.
+# actually needed. A later version waited for the redeploy and retried the
+# search once inline before answering (see git history again), but that
+# risked a single request taking minutes in the worst case — long enough to
+# trip a phone's own network-level timeout before the backend responded.
+# Back to fire-and-forget: the blocked search always returns its usual
+# error right away, with the redeploy just improving the odds for whatever
+# the user tries next.
 
 
-def test_search_retries_once_and_succeeds_after_a_flaresolverr_redeploy():
+def test_search_triggers_a_flaresolverr_redeploy_when_blocked_and_configured():
     reset_flaresolverr_redeploy_cooldown()
-    fake_service = FailingThenSucceedingGasBuddyService(CloudflareBlocked("Missing Token"))
+    fake_service = FailingGasBuddyService(CloudflareBlocked("Missing Token"))
     app.dependency_overrides[get_gasbuddy_service] = lambda: fake_service
     app.dependency_overrides[get_settings] = lambda: Settings(
-        gasbuddy_solver_url="https://flaresolverr-example.onrender.com/v1",
-        render_api_key="rnd_test_key",
-        flaresolverr_service_id="srv-abc123",
+        render_api_key="rnd_test_key", flaresolverr_service_id="srv-abc123"
     )
     fake_post = AsyncMock(return_value=_FakeFlareSolverrResponse(201))
-    fake_get = AsyncMock(return_value=_FakeFlareSolverrResponse(200))
     try:
-        with (
-            patch("httpx.AsyncClient.post", new=fake_post),
-            patch("httpx.AsyncClient.get", new=fake_get),
-        ):
+        with patch("httpx.AsyncClient.post", new=fake_post):
             response = client.get("/api/v1/stations/search", params={"query": "60614"})
     finally:
         app.dependency_overrides.clear()
 
-    # A successful retry looks exactly like an ordinary successful
-    # search to the caller — no trace of the block in between.
-    assert response.status_code == 200
-    assert len(response.json()["results"]) == 1
-    assert fake_service.call_count == 2
+    assert response.status_code == 502
+    assert (
+        response.json()["detail"]
+        == "GasBuddy is temporarily blocking automated requests. Try again shortly."
+    )
+    assert fake_service.call_count == 1
     fake_post.assert_called_once_with(
         "https://api.render.com/v1/services/srv-abc123/deploys",
         headers={
@@ -225,13 +200,13 @@ def test_search_retries_once_and_succeeds_after_a_flaresolverr_redeploy():
         },
         json={},
     )
-    fake_get.assert_called()
 
 
-def test_search_shows_the_generic_blocked_message_when_redeploy_is_not_configured():
+def test_search_does_not_trigger_a_redeploy_when_render_credentials_are_unset():
     reset_flaresolverr_redeploy_cooldown()
-    fake_service = FailingGasBuddyService(CloudflareBlocked("Missing Token"))
-    app.dependency_overrides[get_gasbuddy_service] = lambda: fake_service
+    app.dependency_overrides[get_gasbuddy_service] = lambda: FailingGasBuddyService(
+        CloudflareBlocked("Missing Token")
+    )
     app.dependency_overrides[get_settings] = lambda: Settings()
     fake_post = AsyncMock()
     try:
@@ -240,50 +215,14 @@ def test_search_shows_the_generic_blocked_message_when_redeploy_is_not_configure
     finally:
         app.dependency_overrides.clear()
 
-    # Nothing configured to redeploy means no retry is attempted either
-    # — same single-call, immediate-error behavior as before this
-    # feature existed.
     assert response.status_code == 502
-    assert (
-        response.json()["detail"]
-        == "GasBuddy is temporarily blocking automated requests. Try again shortly."
-    )
-    assert fake_service.call_count == 1
     fake_post.assert_not_called()
-
-
-def test_search_reports_failed_to_obtain_results_when_the_retry_is_also_blocked():
-    reset_flaresolverr_redeploy_cooldown()
-    fake_service = FailingGasBuddyService(CloudflareBlocked("Missing Token"))
-    app.dependency_overrides[get_gasbuddy_service] = lambda: fake_service
-    app.dependency_overrides[get_settings] = lambda: Settings(
-        gasbuddy_solver_url="https://flaresolverr-example.onrender.com/v1",
-        render_api_key="rnd_test_key",
-        flaresolverr_service_id="srv-abc123",
-    )
-    fake_post = AsyncMock(return_value=_FakeFlareSolverrResponse(201))
-    fake_get = AsyncMock(return_value=_FakeFlareSolverrResponse(200))
-    try:
-        with (
-            patch("httpx.AsyncClient.post", new=fake_post),
-            patch("httpx.AsyncClient.get", new=fake_get),
-        ):
-            response = client.get("/api/v1/stations/search", params={"query": "60614"})
-    finally:
-        app.dependency_overrides.clear()
-
-    # Exactly one redeploy + one retry, never a loop — a still-failing
-    # retry gets its own distinct message, not the original block error.
-    assert response.status_code == 502
-    assert response.json()["detail"] == "Failed to obtain gas results."
-    assert fake_service.call_count == 2
-    fake_post.assert_called_once()
 
 
 def test_search_does_not_retrigger_a_redeploy_within_the_cooldown_window():
     # A burst of failing requests while a redeploy is already in flight
-    # must not each fire their own redeploy — but each still waits and
-    # retries once on its own.
+    # (the new container isn't up yet, so more searches keep failing)
+    # must not each fire their own redeploy.
     reset_flaresolverr_redeploy_cooldown()
     app.dependency_overrides[get_gasbuddy_service] = lambda: FailingGasBuddyService(
         CloudflareBlocked("Missing Token")
@@ -302,7 +241,7 @@ def test_search_does_not_retrigger_a_redeploy_within_the_cooldown_window():
     fake_post.assert_called_once()
 
 
-def test_search_reports_failed_to_obtain_results_when_the_redeploy_trigger_itself_fails():
+def test_search_still_returns_502_when_the_redeploy_trigger_itself_fails():
     reset_flaresolverr_redeploy_cooldown()
     app.dependency_overrides[get_gasbuddy_service] = lambda: FailingGasBuddyService(
         CloudflareBlocked("Missing Token")
@@ -319,12 +258,7 @@ def test_search_reports_failed_to_obtain_results_when_the_redeploy_trigger_itsel
     finally:
         app.dependency_overrides.clear()
 
-    # The redeploy trigger failing is still best-effort — the retry
-    # still happens (against the same, presumably-still-blocked
-    # container), so this still ends in the "retry also failed" message
-    # rather than raising an unhandled error.
     assert response.status_code == 502
-    assert response.json()["detail"] == "Failed to obtain gas results."
 
 
 def test_search_does_not_trigger_a_redeploy_for_a_non_cloudflare_error():
