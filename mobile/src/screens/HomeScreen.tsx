@@ -14,6 +14,7 @@ import {
   HealthResponse,
   searchNearestStations,
 } from '../api/client';
+import AboutModal from '../components/AboutModal';
 import LocationSearchBar, {
   LocationQuery,
 } from '../components/LocationSearchBar';
@@ -347,6 +348,10 @@ function HomeScreen({
           the Simulator or by tests). */}
       <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
         <View>
+          <View style={styles.topRow}>
+            <AboutModal />
+          </View>
+
           <LocationSearchBar
             onSearch={handleLocationSearch}
             initialQuery={
@@ -464,6 +469,10 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 16,
     marginTop: 10,
+  },
+  topRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
   },
   leftControls: {
     flexDirection: 'row',

@@ -96,10 +96,28 @@ need to ask where you are every time.
   as the rest of the app
 - **Testing:** pytest (backend), Jest (mobile)
 
-Station, charging, and pricing data come from a mix of free public and
-third-party data sources — deliberately not named here, since this
-project is just a technical demonstration and isn't affiliated with, or
-endorsed by, any of them.
+## Data sources & disclaimer
+
+This project is an independent technical demonstration and is **not
+affiliated with, sponsored by, or endorsed by** any of the following:
+
+- **GasBuddy** — gas station listings and prices, retrieved via
+  [py-gasbuddy](https://pypi.org/project/py-gasbuddy/), an open-source
+  library that calls GasBuddy's own public GraphQL API.
+- **NREL's Alternative Fuel Data Center (AFDC)** — EV charging station
+  listings.
+- **Open Charge Map** — community-reported EV charging station details
+  and reviews.
+- **U.S. Energy Information Administration (EIA)** — national gas price
+  trend data used for the US price forecast.
+- **Statistics Canada** — national gas price trend data used for the
+  Canadian price forecast.
+- **Google Gemini** — powers the AI agent.
+
+All product names, logos, and brands mentioned above are property of
+their respective owners and are used here only to identify where the
+underlying data comes from. The same disclaimer, in the same words, is
+also shown in-app (tap the ⓘ icon on the Gas tab).
 
 ## Project structure
 
