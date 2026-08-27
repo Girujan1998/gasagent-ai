@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 from app.api.routes.chat import get_chat_service
 from app.main import app
 from app.models.schemas import ChatMessage, EvStation, GasStation
-from app.services.gemini_client import ChatError, ChatTurnResult
+from app.services.chat_agent_client import ChatError, ChatTurnResult
 
 client = TestClient(app)
 

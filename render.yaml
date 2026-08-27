@@ -19,10 +19,10 @@ services:
         sync: false
       - key: EIA_API_KEY
         sync: false
-      # Optional — only needed if GasBuddy's Cloudflare protection blocks
-      # this deploy's IP (see backend/.env.example). Leave unset for now;
-      # gas-station search will return a CloudflareBlocked error until
-      # this points at a working FlareSolverr instance. EV search is
-      # unaffected either way.
+      # Optional — only needed if the gas-price lookup's anti-bot
+      # protection blocks this deploy's IP (see backend/.env.example).
+      # Leave unset for now; gas-station search will return a
+      # CloudflareBlocked error until this points at a working solver
+      # instance. EV search is unaffected either way.
       - key: GASBUDDY_SOLVER_URL
         sync: false

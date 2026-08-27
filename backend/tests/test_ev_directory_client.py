@@ -2,12 +2,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.services.afdc_client import KM_TO_MILES, AfdcService, SEARCH_RADIUS_MILES
+from app.services.ev_directory_client import KM_TO_MILES, EvDirectoryService, SEARCH_RADIUS_MILES
 
 
-class _FakeAfdcResponse:
+class _FakeDirectoryResponse:
     """Stands in for httpx.Response — just enough of its interface for
-    AfdcService.search_nearest_ev_stations, without a real network call."""
+    EvDirectoryService.search_nearest_ev_stations, without a real network call."""
 
     def __init__(self, body):
         self._body = body
@@ -46,12 +46,12 @@ def _raw_station(**overrides):
 
 
 @pytest.mark.asyncio
-async def test_search_maps_afdc_fields_onto_ev_station():
-    fake_response = _FakeAfdcResponse(
+async def test_search_maps_directory_fields_onto_ev_station():
+    fake_response = _FakeDirectoryResponse(
         {"fuel_stations": [_raw_station()], "total_results": 1}
     )
     with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=fake_response)):
-        result = await AfdcService().search_nearest_ev_stations(
+        result = await EvDirectoryService().search_nearest_ev_stations(
             lat=41.85, lon=-87.65
         )
 
@@ -76,14 +76,14 @@ async def test_search_maps_afdc_fields_onto_ev_station():
     assert station.dc_fast_count is None
     assert station.connector_types == ["J1772"]
     assert station.date_last_confirmed == "2026-08-16"
-    # AFDC has no community layer at all.
+    # The directory source has no community layer at all.
     assert station.comments == []
     assert station.photo_urls == []
 
 
 @pytest.mark.asyncio
 async def test_search_combines_street_city_and_state_into_one_address_line():
-    fake_response = _FakeAfdcResponse(
+    fake_response = _FakeDirectoryResponse(
         {
             "fuel_stations": [
                 _raw_station(street_address="55 Dickson Street", city="Cambridge", state="ON")
@@ -92,7 +92,7 @@ async def test_search_combines_street_city_and_state_into_one_address_line():
         }
     )
     with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=fake_response)):
-        result = await AfdcService().search_nearest_ev_stations(
+        result = await EvDirectoryService().search_nearest_ev_stations(
             lat=43.3601, lon=-80.31269
         )
 
@@ -101,7 +101,7 @@ async def test_search_combines_street_city_and_state_into_one_address_line():
 
 @pytest.mark.asyncio
 async def test_search_omits_missing_address_parts_instead_of_leaving_blank_commas():
-    fake_response = _FakeAfdcResponse(
+    fake_response = _FakeDirectoryResponse(
         {
             "fuel_stations": [
                 _raw_station(street_address="55 Dickson Street", city=None, state="ON")
@@ -110,7 +110,7 @@ async def test_search_omits_missing_address_parts_instead_of_leaving_blank_comma
         }
     )
     with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=fake_response)):
-        result = await AfdcService().search_nearest_ev_stations(
+        result = await EvDirectoryService().search_nearest_ev_stations(
             lat=43.3601, lon=-80.31269
         )
 
@@ -119,7 +119,7 @@ async def test_search_omits_missing_address_parts_instead_of_leaving_blank_comma
 
 @pytest.mark.asyncio
 async def test_search_leaves_address_null_when_no_address_parts_are_reported():
-    fake_response = _FakeAfdcResponse(
+    fake_response = _FakeDirectoryResponse(
         {
             "fuel_stations": [
                 _raw_station(street_address=None, city=None, state=None)
@@ -128,7 +128,7 @@ async def test_search_leaves_address_null_when_no_address_parts_are_reported():
         }
     )
     with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=fake_response)):
-        result = await AfdcService().search_nearest_ev_stations(
+        result = await EvDirectoryService().search_nearest_ev_stations(
             lat=43.3601, lon=-80.31269
         )
 
@@ -137,11 +137,11 @@ async def test_search_leaves_address_null_when_no_address_parts_are_reported():
 
 @pytest.mark.asyncio
 async def test_search_falls_back_to_returned_count_when_total_results_missing():
-    # Some AFDC responses may omit total_results outright — falling back to
+    # Some directory-source responses may omit total_results outright — falling back to
     # len(stations) keeps "load more" from looping forever on a bad signal.
-    fake_response = _FakeAfdcResponse({"fuel_stations": [_raw_station()]})
+    fake_response = _FakeDirectoryResponse({"fuel_stations": [_raw_station()]})
     with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=fake_response)):
-        result = await AfdcService().search_nearest_ev_stations(
+        result = await EvDirectoryService().search_nearest_ev_stations(
             lat=41.85, lon=-87.65
         )
 
@@ -150,9 +150,9 @@ async def test_search_falls_back_to_returned_count_when_total_results_missing():
 
 @pytest.mark.asyncio
 async def test_search_handles_no_stations_found():
-    fake_response = _FakeAfdcResponse({"fuel_stations": [], "total_results": 0})
+    fake_response = _FakeDirectoryResponse({"fuel_stations": [], "total_results": 0})
     with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=fake_response)):
-        result = await AfdcService().search_nearest_ev_stations(
+        result = await EvDirectoryService().search_nearest_ev_stations(
             lat=0.0, lon=0.0
         )
 
@@ -162,10 +162,10 @@ async def test_search_handles_no_stations_found():
 
 @pytest.mark.asyncio
 async def test_search_sends_expected_request_params():
-    fake_response = _FakeAfdcResponse({"fuel_stations": [], "total_results": 0})
+    fake_response = _FakeDirectoryResponse({"fuel_stations": [], "total_results": 0})
     fake_get = AsyncMock(return_value=fake_response)
     with patch("httpx.AsyncClient.get", new=fake_get):
-        await AfdcService().search_nearest_ev_stations(lat=41.85, lon=-87.65, limit=15)
+        await EvDirectoryService().search_nearest_ev_stations(lat=41.85, lon=-87.65, limit=15)
 
     _, kwargs = fake_get.call_args
     params = kwargs["params"]
@@ -176,7 +176,7 @@ async def test_search_sends_expected_request_params():
     assert params["status"] == "E"
     assert params["access"] == "public"
     assert params["limit"] == 15
-    # Without this, NREL defaults to US-only and silently returns zero
+    # Without this, the directory source defaults to US-only and silently returns zero
     # results for a Canadian search location (e.g. Cambridge, ON) even
     # though the app supports Canadian postal codes elsewhere.
     assert params["country"] == "US,CA"
@@ -184,23 +184,24 @@ async def test_search_sends_expected_request_params():
 
 @pytest.mark.asyncio
 async def test_search_uses_default_radius_when_radius_km_is_not_given():
-    fake_response = _FakeAfdcResponse({"fuel_stations": [], "total_results": 0})
+    fake_response = _FakeDirectoryResponse({"fuel_stations": [], "total_results": 0})
     fake_get = AsyncMock(return_value=fake_response)
     with patch("httpx.AsyncClient.get", new=fake_get):
-        await AfdcService().search_nearest_ev_stations(lat=41.85, lon=-87.65)
+        await EvDirectoryService().search_nearest_ev_stations(lat=41.85, lon=-87.65)
 
     _, kwargs = fake_get.call_args
     assert kwargs["params"]["radius"] == SEARCH_RADIUS_MILES
 
 
 @pytest.mark.asyncio
-async def test_search_converts_radius_km_to_miles_for_the_nrel_request():
-    # Map view searches a fixed 30km radius — NREL's own `radius` param is
-    # in miles, so this must be converted, not passed through as-is.
-    fake_response = _FakeAfdcResponse({"fuel_stations": [], "total_results": 0})
+async def test_search_converts_radius_km_to_miles_for_the_directory_source_request():
+    # Map view searches a fixed 30km radius — the directory source's own
+    # `radius` param is in miles, so this must be converted, not passed
+    # through as-is.
+    fake_response = _FakeDirectoryResponse({"fuel_stations": [], "total_results": 0})
     fake_get = AsyncMock(return_value=fake_response)
     with patch("httpx.AsyncClient.get", new=fake_get):
-        await AfdcService().search_nearest_ev_stations(
+        await EvDirectoryService().search_nearest_ev_stations(
             lat=41.85, lon=-87.65, radius_km=30
         )
 
@@ -222,10 +223,10 @@ async def test_search_geocodes_when_only_query_is_given():
     async def fake_get(self, url, params=None):
         if "geocoding" in url:
             return _FakeGeocodeResponse()
-        return _FakeAfdcResponse({"fuel_stations": [], "total_results": 0})
+        return _FakeDirectoryResponse({"fuel_stations": [], "total_results": 0})
 
     with patch("httpx.AsyncClient.get", new=fake_get):
-        result = await AfdcService().search_nearest_ev_stations(query="60614")
+        result = await EvDirectoryService().search_nearest_ev_stations(query="60614")
 
     assert result.lat == 41.85
     assert result.lon == -87.65

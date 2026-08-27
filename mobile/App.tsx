@@ -6,7 +6,7 @@ import {
   useColorScheme,
 } from 'react-native';
 
-import {getHealth, warmupFlareSolverrContainer} from './src/api/client';
+import {getHealth, warmupSolverContainer} from './src/api/client';
 import BottomNavBar, {TabKey} from './src/navigation/BottomNavBar';
 import ChatScreen, {
   INITIAL_PERSISTED_CHAT,
@@ -29,26 +29,27 @@ import SplashScreen from './src/screens/SplashScreen';
 import {FavoritesProvider, useFavorites} from './src/store/FavoritesContext';
 import {LocationProvider} from './src/store/LocationContext';
 
-// This only waits on waking FlareSolverr's own container (a few seconds
-// up to ~20s cold), NOT a real GasBuddy challenge-solve (~55-60s) — an
-// earlier version of this warmup ran a real gas search to also prime a
-// GasBuddy session token, but that fired unconditionally on every app
-// launch regardless of whether the user ever searched for gas that
-// session, adding real load against GasBuddy's own request-rate limit
-// for zero benefit on EV/Chat-only sessions. The user's first real gas
-// search still pays for the actual challenge-solve itself — this bound
-// only needs margin over a container wake, not a full solve.
+// This only waits on waking the anti-bot solver's own container (a few
+// seconds up to ~20s cold), NOT a real gas-price challenge-solve
+// (~55-60s) — an earlier version of this warmup ran a real gas search
+// to also prime a session token, but that fired unconditionally on
+// every app launch regardless of whether the user ever searched for
+// gas that session, adding real load against the gas-price lookup's
+// own request-rate limit for zero benefit on EV/Chat-only sessions.
+// The user's first real gas search still pays for the actual
+// challenge-solve itself — this bound only needs margin over a
+// container wake, not a full solve.
 //
-// The backend does NOT redeploy FlareSolverr on launch either (an
+// The backend does NOT redeploy the solver on launch either (an
 // earlier version did, unconditionally — see git history — but that
 // added a 45s+ wait to every cold app open regardless of whether the
-// user ever hit a Cloudflare block that session). It instead triggers a
+// user ever hit an anti-bot block that session). It instead triggers a
 // redeploy reactively, only from a real gas search that actually gets
 // blocked, so this bound doesn't need to cover that case. Not
-// indefinite, though — EV search and Chat don't depend on FlareSolverr
+// indefinite, though — EV search and Chat don't depend on the solver
 // at all, so there's no reason to strand the user if it's genuinely
-// crashed rather than just cold (Render can take a couple of minutes to
-// notice and restart it).
+// crashed rather than just cold (the host can take a couple of minutes
+// to notice and restart it).
 const WARMUP_TIMEOUT_MS = 30000;
 
 function ActiveScreen({
@@ -115,7 +116,7 @@ function ActiveScreen({
 
 function AppContent(): React.JSX.Element {
   const {isReady} = useFavorites();
-  // Wakes the backend + FlareSolverr's container on launch (see the
+  // Wakes the backend + the solver's container on launch (see the
   // module comment on WARMUP_TIMEOUT_MS for why this stops short of a
   // real gas search). Runs once per app launch, not on every tab switch
   // — this effect lives on AppContent's own mount, same lifetime as
@@ -155,9 +156,9 @@ function AppContent(): React.JSX.Element {
         if (cancelled) {
           return;
         }
-        await warmupFlareSolverrContainer();
+        await warmupSolverContainer();
       } catch {
-        // Backend unreachable, or FlareSolverr's container didn't wake in
+        // Backend unreachable, or the solver's container didn't wake in
         // time (e.g. genuinely crashed rather than just cold) — proceed
         // into the app regardless; the existing per-screen error handling
         // already covers a backend/gas search that isn't actually ready.

@@ -24,7 +24,7 @@ function makeForecast(
     price_change_formatted: '+1.2¢',
     trend_direction: 'up',
     daily_change_pct: 0.0023,
-    source: 'statcan',
+    source: 'ca',
     source_period_end: '2026-07-01',
     stations_sampled: 8,
     today_lowest_price: 158.9,
@@ -182,13 +182,13 @@ it('shows a flat/steady label when the trend direction is flat', async () => {
   expect(texts(renderer!)).toContain('Steady');
 });
 
-it("attributes the forecast to Statistics Canada's monthly trend by month and year", async () => {
+it("attributes the forecast to Canada's monthly trend by month and year", async () => {
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
       <ForecastCard
         forecast={makeForecast({
-          source: 'statcan',
+          source: 'ca',
           source_period_end: '2026-07-01',
         })}
       />,
@@ -196,17 +196,17 @@ it("attributes the forecast to Statistics Canada's monthly trend by month and ye
   });
 
   expect(texts(renderer!).join(' ')).toContain(
-    "Based on Statistics Canada's national trend for Jul 2026",
+    "Based on Canada's national price trend for Jul 2026",
   );
 });
 
-it("attributes the forecast to the U.S. EIA's weekly trend by week", async () => {
+it("attributes the forecast to the US weekly trend by week", async () => {
   let renderer: ReactTestRenderer;
   await act(async () => {
     renderer = create(
       <ForecastCard
         forecast={makeForecast({
-          source: 'eia',
+          source: 'us',
           source_period_end: '2026-08-11',
         })}
       />,
@@ -214,7 +214,7 @@ it("attributes the forecast to the U.S. EIA's weekly trend by week", async () =>
   });
 
   expect(texts(renderer!).join(' ')).toContain(
-    "Based on the U.S. EIA's national trend (week of Aug 11)",
+    'Based on the US national price trend (week of Aug 11)',
   );
 });
 

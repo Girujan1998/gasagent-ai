@@ -11,8 +11,9 @@ function networkKey(station: EvStation): string {
 }
 
 // Unlike gas's brandKey, an EV network name is used as-is rather than
-// matched against a well-known list — both AFDC and OCM already report a
-// single canonical operator name (e.g. "ChargePoint", "EVgo"), so there's
+// matched against a well-known list — both the directory and community
+// sources already report a single canonical operator name (e.g.
+// "ChargePoint", "EVgo"), so there's
 // no spelling variance to normalize away. Stations with no reported
 // network are bucketed under Unknown (sorted last), the same way gas
 // stations with no brand fall into Other, rather than becoming

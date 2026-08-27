@@ -14,9 +14,9 @@ async def get_gas_price_forecast(
     service: ForecastService = Depends(get_forecast_service),
 ) -> GasPriceForecast:
     """Forecast tomorrow's average regular gas price for stations near a
-    location, from today's live GasBuddy average adjusted by a national
-    trend (Statistics Canada for Canadian locations, US EIA for American
-    ones, when configured)."""
+    location, from today's live gas-price average adjusted by a national
+    trend (Canada's own national statistics source for Canadian
+    locations, the US equivalent for American ones, when configured)."""
     try:
         return await service.forecast(lat, lon)
     except MissingSearchData as exc:
@@ -26,9 +26,9 @@ async def get_gas_price_forecast(
     except CloudflareBlocked as exc:
         raise HTTPException(
             status_code=502,
-            detail="GasBuddy is temporarily blocking automated requests. Try again shortly.",
+            detail="The gas price service is temporarily blocking automated requests. Try again shortly.",
         ) from exc
     except (LibraryError, APIError) as exc:
         raise HTTPException(
-            status_code=502, detail=f"GasBuddy lookup failed: {exc}"
+            status_code=502, detail=f"Gas price lookup failed: {exc}"
         ) from exc

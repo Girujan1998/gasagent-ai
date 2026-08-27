@@ -1,7 +1,7 @@
 // Hosted on Render (see /render.yaml) — works from any network, no
-// laptop or shared WiFi required. Gas-station search routes through a
-// FlareSolverr instance (GASBUDDY_SOLVER_URL, set on the Render service)
-// to get past GasBuddy's Cloudflare protection.
+// laptop or shared WiFi required. Gas-station search routes through an
+// anti-bot solver instance (GASBUDDY_SOLVER_URL, set on the Render
+// service) to get past the gas-price lookup's anti-bot protection.
 export const API_BASE_URL = 'https://gasagent-api.onrender.com/api/v1';
 
 export type HealthResponse = {
@@ -57,15 +57,16 @@ export type EvStationComment = {
   author: string;
   text: string;
   date: string | null;
-  // OCM-only signal for whether this comment confirms the charger actually
-  // worked when the commenter visited, e.g. "Charged Successfully" vs
-  // "Failed to Charge (Equipment Not Operational)".
+  // Community-source-only signal for whether this comment confirms the
+  // charger actually worked when the commenter visited, e.g. "Charged
+  // Successfully" vs "Failed to Charge (Equipment Not Operational)".
   checkin_status: string | null;
   checkin_is_positive: boolean | null;
 };
 
-// OCM-only — AFDC has no equivalent per-connector electrical spec data at
-// all. A station can have multiple connectors of the same type with
+// Community-source-only — the directory source has no equivalent
+// per-connector electrical spec data at all. A station can have
+// multiple connectors of the same type with
 // different specs, so this is a flat list, not keyed by connector type.
 export type EvConnectorDetail = {
   connector_type: string;
@@ -110,8 +111,8 @@ export type GasPriceForecast = {
   lon: number;
   today_average_price: number | null;
   forecasted_price: number | null;
-  // Pre-formatted like GasBuddy's own per-station prices (e.g. "$3.19" in
-  // the US, "167.7¢" in Canada) — use these for display rather than
+  // Pre-formatted like each station's own price (e.g. "$3.19" in the
+  // US, "167.7¢" in Canada) — use these for display rather than
   // formatting today_average_price/forecasted_price directly, since the
   // raw numbers alone don't say which regional convention applies.
   today_average_formatted: string | null;
@@ -122,7 +123,7 @@ export type GasPriceForecast = {
   price_change_formatted: string | null;
   trend_direction: 'up' | 'down' | 'flat';
   daily_change_pct: number | null;
-  source: 'statcan' | 'eia' | 'none';
+  source: 'ca' | 'us' | 'none';
   source_period_end: string | null;
   stations_sampled: number;
   // The spread across nearby stations, not just their average — each end
@@ -180,20 +181,21 @@ export function getHealth(): Promise<HealthResponse> {
   return request<HealthResponse>('/health');
 }
 
-export type FlareSolverrWarmupResponse = {
+export type ContainerWarmupResponse = {
   awake: boolean;
 };
 
-// Wakes FlareSolverr's own container (see App.tsx's launch effect) —
-// deliberately does NOT run a real gas search. An earlier version of
-// this called a real search to also prime a GasBuddy session token, but
-// that fired unconditionally on every app launch regardless of whether
-// the user ever searched for gas that session, adding real load against
-// GasBuddy's own request-rate limit for zero benefit on EV/Chat-only
-// sessions. `awake: false` is an expected, retryable response here (the
-// container may still be waking up), not a thrown error.
-export function warmupFlareSolverrContainer(): Promise<FlareSolverrWarmupResponse> {
-  return request<FlareSolverrWarmupResponse>('/stations/warmup-container', {
+// Wakes the anti-bot solver's own container (see App.tsx's launch
+// effect) — deliberately does NOT run a real gas search. An earlier
+// version of this called a real search to also prime a session token,
+// but that fired unconditionally on every app launch regardless of
+// whether the user ever searched for gas that session, adding real
+// load against the gas-price lookup's own request-rate limit for zero
+// benefit on EV/Chat-only sessions. `awake: false` is an expected,
+// retryable response here (the container may still be waking up), not
+// a thrown error.
+export function warmupSolverContainer(): Promise<ContainerWarmupResponse> {
+  return request<ContainerWarmupResponse>('/stations/warmup-container', {
     method: 'POST',
   });
 }
@@ -230,7 +232,7 @@ export function searchNearestStations(
   );
 }
 
-// NREL AFDC has no cursor-based pagination — `limit` is the total number of
+// The EV directory source has no cursor-based pagination — `limit` is the total number of
 // nearest stations to return in one call, already sorted by distance, so
 // "load more" means re-requesting with a bigger limit and replacing the
 // results, not appending a new page.

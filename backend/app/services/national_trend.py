@@ -4,8 +4,8 @@ from dataclasses import dataclass
 @dataclass
 class NationalTrend:
     """A national-average price trend from a government statistics
-    source — shared shape for statcan_client.py and eia_client.py so
-    forecast.py can treat either one the same way regardless of which
+    source — shared shape for ca_trend_client.py and us_trend_client.py
+    so forecast.py can treat either one the same way regardless of which
     country's source produced it."""
 
     latest_value: float

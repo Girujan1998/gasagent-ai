@@ -6,15 +6,15 @@ from app.services.country_lookup import (
     CountryLookupService,
     get_country_lookup_service,
 )
-from app.services.eia_client import EiaService, get_eia_service
-from app.services.gasbuddy_client import (
-    GASBUDDY_PAGE_SIZE,
-    GasBuddyService,
+from app.services.us_trend_client import UsTrendService, get_us_trend_service
+from app.services.gas_price_client import (
+    GAS_PRICE_PAGE_SIZE,
+    GasPriceService,
     format_price_like,
-    get_gasbuddy_service,
+    get_gas_price_service,
 )
 from app.services.national_trend import NationalTrend
-from app.services.statcan_client import StatCanService, get_statcan_service
+from app.services.ca_trend_client import CaTrendService, get_ca_trend_service
 
 # A day-over-day change smaller than this shows as "flat" rather than up
 # or down — otherwise a source's own rounding noise (e.g. a fraction of a
@@ -23,13 +23,13 @@ from app.services.statcan_client import StatCanService, get_statcan_service
 FLAT_THRESHOLD_PCT = 0.0005  # 0.05%/day
 
 # _fetch_wide_sample below can follow next_cursor across multiple pages of
-# GASBUDDY_PAGE_SIZE (see gasbuddy_client.py), but this is deliberately
-# kept at 1: py-gasbuddy is an unofficial scraper of GasBuddy's internal
-# API (it already has CloudflareBlocked handling for exactly this reason),
-# and every extra page here is an extra request against it — multiplied
-# further by the mobile client's own call frequency (see
+# GAS_PRICE_PAGE_SIZE (see gas_price_client.py), but this is deliberately
+# kept at 1: the underlying gas-price lookup is an unofficial scrape of a
+# third-party site (it already has a dedicated exception for exactly this
+# kind of blocking), and every extra page here is an extra request against
+# it — multiplied further by the mobile client's own call frequency (see
 # NotificationsScreen's persisted-forecast caching). One page is the same
-# cost as the rest of the app's GasBuddy usage.
+# cost as the rest of the app's gas-price usage.
 STATIONS_SAMPLE_PAGES = 1
 
 
@@ -67,25 +67,25 @@ def _project(value: float | None, daily_change_pct: float | None) -> float | Non
 
 
 class ForecastService:
-    """Projects tomorrow's local gas price from today's live GasBuddy
+    """Projects tomorrow's local gas price from today's live station-price
     average, adjusted by a national trend's daily-prorated rate of change.
 
-    The trend is a secondary signal, not the headline number — GasBuddy's
-    own live average for the area is always what "today" means here, and
-    if no trend source is available the forecast is simply "no change".
+    The trend is a secondary signal, not the headline number — the live
+    average for the area is always what "today" means here, and if no
+    trend source is available the forecast is simply "no change".
     """
 
     def __init__(
         self,
-        gasbuddy: GasBuddyService,
+        gas_price: GasPriceService,
         country_lookup: CountryLookupService,
-        statcan: StatCanService,
-        eia: EiaService,
+        ca_trend: CaTrendService,
+        us_trend: UsTrendService,
     ) -> None:
-        self._gasbuddy = gasbuddy
+        self._gas_price = gas_price
         self._country_lookup = country_lookup
-        self._statcan = statcan
-        self._eia = eia
+        self._ca_trend = ca_trend
+        self._us_trend = us_trend
 
     async def forecast(self, lat: float, lon: float) -> GasPriceForecast:
         stations = await self._fetch_wide_sample(lat, lon)
@@ -206,7 +206,7 @@ class ForecastService:
         constant's own comment on why), so this is equivalent to a single
         fetch today, but keeps the option to widen the sample again
         without restructuring the call site if that's ever worth the
-        added GasBuddy load.
+        added gas-price-lookup load.
 
         Stops early if a page comes back empty or without a next_cursor —
         there's nothing further out to add.
@@ -214,8 +214,8 @@ class ForecastService:
         stations: list[GasStation] = []
         cursor: str | None = None
         for _ in range(STATIONS_SAMPLE_PAGES):
-            result = await self._gasbuddy.search_nearest_stations(
-                lat=lat, lon=lon, limit=GASBUDDY_PAGE_SIZE, cursor=cursor
+            result = await self._gas_price.search_nearest_stations(
+                lat=lat, lon=lon, limit=GAS_PRICE_PAGE_SIZE, cursor=cursor
             )
             if not result.stations:
                 break
@@ -225,10 +225,10 @@ class ForecastService:
                 break
         return stations
 
-    # Statistics Canada is free and keyless, so any Canadian location gets
-    # a real trend; EIA requires a key (see eia_client.py) — a US location
-    # without one configured falls back to "none" the same as an
-    # unresolvable country would.
+    # The Canadian trend source is free and keyless, so any Canadian
+    # location gets a real trend; the US one requires a key (see
+    # us_trend_client.py) — a US location without one configured falls
+    # back to "none" the same as an unresolvable country would.
     async def _resolve_trend(
         self, lat: float, lon: float
     ) -> tuple[NationalTrend | None, str]:
@@ -238,18 +238,18 @@ class ForecastService:
             country_code = None
 
         if country_code == "ca":
-            trend = await self._statcan.latest_trend()
-            return (trend, "statcan") if trend is not None else (None, "none")
+            trend = await self._ca_trend.latest_trend()
+            return (trend, "ca") if trend is not None else (None, "none")
         if country_code == "us":
-            trend = await self._eia.latest_trend()
-            return (trend, "eia") if trend is not None else (None, "none")
+            trend = await self._us_trend.latest_trend()
+            return (trend, "us") if trend is not None else (None, "none")
         return None, "none"
 
 
 def get_forecast_service(
-    gasbuddy: GasBuddyService = Depends(get_gasbuddy_service),
+    gas_price: GasPriceService = Depends(get_gas_price_service),
     country_lookup: CountryLookupService = Depends(get_country_lookup_service),
-    statcan: StatCanService = Depends(get_statcan_service),
-    eia: EiaService = Depends(get_eia_service),
+    ca_trend: CaTrendService = Depends(get_ca_trend_service),
+    us_trend: UsTrendService = Depends(get_us_trend_service),
 ) -> ForecastService:
-    return ForecastService(gasbuddy, country_lookup, statcan, eia)
+    return ForecastService(gas_price, country_lookup, ca_trend, us_trend)

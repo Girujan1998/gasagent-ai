@@ -5,20 +5,20 @@ from fastapi.testclient import TestClient
 from py_gasbuddy import CloudflareBlocked, LibraryError
 
 import app.api.routes.stations as stations_module
-from app.api.routes.stations import get_gasbuddy_service
+from app.api.routes.stations import get_gas_price_service
 from app.config import Settings, get_settings
 from app.main import app
 from app.models.schemas import FuelPrice, GasStation
-from app.services.gasbuddy_client import StationSearchResult
+from app.services.gas_price_client import StationSearchResult
 
 client = TestClient(app)
 
 
-def reset_flaresolverr_redeploy_cooldown():
+def reset_solver_redeploy_cooldown():
     # The cooldown is process-global (deliberately — see its own module
     # comment), so tests that trigger it must reset it, or an earlier
     # test's trigger would suppress a later test's expected trigger.
-    stations_module._last_flaresolverr_redeploy_trigger = 0.0
+    stations_module._last_solver_redeploy_trigger = 0.0
 
 
 def make_station(station_id: str) -> GasStation:
@@ -26,7 +26,7 @@ def make_station(station_id: str) -> GasStation:
         station_id=station_id,
         name="Test Station",
         brand="Costco",
-        brand_logo_url="https://images.gasbuddy.io/b/38.png",
+        brand_logo_url="https://images.example.com/b/38.png",
         address="1 Main St, Springfield, IL",
         latitude=41.85,
         longitude=-87.65,
@@ -56,7 +56,7 @@ def make_station(station_id: str) -> GasStation:
     )
 
 
-class FakeGasBuddyService:
+class FakeGasPriceService:
     def __init__(self, next_cursor: str | None = None):
         self._next_cursor = next_cursor
         self.last_call_kwargs: dict | None = None
@@ -85,7 +85,7 @@ def test_search_requires_query_or_coordinates():
 
 
 def test_search_returns_stations():
-    app.dependency_overrides[get_gasbuddy_service] = lambda: FakeGasBuddyService()
+    app.dependency_overrides[get_gas_price_service] = lambda: FakeGasPriceService()
     try:
         response = client.get("/api/v1/stations/search", params={"query": "60614"})
     finally:
@@ -98,7 +98,7 @@ def test_search_returns_stations():
 
     station = results[0]
     assert station["brand"] == "Costco"
-    assert station["brand_logo_url"] == "https://images.gasbuddy.io/b/38.png"
+    assert station["brand_logo_url"] == "https://images.example.com/b/38.png"
     assert station["latitude"] == 41.85
     assert station["longitude"] == -87.65
     assert station["distance_miles"] == 1.2
@@ -114,7 +114,7 @@ def test_search_returns_stations():
 
 
 def test_search_returns_next_cursor_when_more_results_exist():
-    app.dependency_overrides[get_gasbuddy_service] = lambda: FakeGasBuddyService(
+    app.dependency_overrides[get_gas_price_service] = lambda: FakeGasPriceService(
         next_cursor="20"
     )
     try:
@@ -127,8 +127,8 @@ def test_search_returns_next_cursor_when_more_results_exist():
 
 
 def test_search_forwards_cursor_and_coordinates_for_next_page():
-    fake_service = FakeGasBuddyService()
-    app.dependency_overrides[get_gasbuddy_service] = lambda: fake_service
+    fake_service = FakeGasPriceService()
+    app.dependency_overrides[get_gas_price_service] = lambda: fake_service
     try:
         response = client.get(
             "/api/v1/stations/search",
@@ -147,7 +147,7 @@ def test_search_forwards_cursor_and_coordinates_for_next_page():
     }
 
 
-class FailingGasBuddyService:
+class FailingGasPriceService:
     """Always raises, on every call."""
 
     def __init__(self, exc: Exception):
@@ -159,9 +159,9 @@ class FailingGasBuddyService:
         raise self._exc
 
 
-# --- FlareSolverr redeploy triggered reactively by a blocked search -------
+# --- Solver redeploy triggered reactively by a blocked search -------
 #
-# An earlier version of this eagerly redeployed FlareSolverr on every app
+# An earlier version of this eagerly redeployed the solver on every app
 # launch instead (see git history) — moved here so it only happens when
 # actually needed. A later version waited for the redeploy and retried the
 # search once inline before answering (see git history again), but that
@@ -172,14 +172,14 @@ class FailingGasBuddyService:
 # the user tries next.
 
 
-def test_search_triggers_a_flaresolverr_redeploy_when_blocked_and_configured():
-    reset_flaresolverr_redeploy_cooldown()
-    fake_service = FailingGasBuddyService(CloudflareBlocked("Missing Token"))
-    app.dependency_overrides[get_gasbuddy_service] = lambda: fake_service
+def test_search_triggers_a_solver_redeploy_when_blocked_and_configured():
+    reset_solver_redeploy_cooldown()
+    fake_service = FailingGasPriceService(CloudflareBlocked("Missing Token"))
+    app.dependency_overrides[get_gas_price_service] = lambda: fake_service
     app.dependency_overrides[get_settings] = lambda: Settings(
         render_api_key="rnd_test_key", flaresolverr_service_id="srv-abc123"
     )
-    fake_post = AsyncMock(return_value=_FakeFlareSolverrResponse(201))
+    fake_post = AsyncMock(return_value=_FakeSolverResponse(201))
     try:
         with patch("httpx.AsyncClient.post", new=fake_post):
             response = client.get("/api/v1/stations/search", params={"query": "60614"})
@@ -189,7 +189,7 @@ def test_search_triggers_a_flaresolverr_redeploy_when_blocked_and_configured():
     assert response.status_code == 502
     assert (
         response.json()["detail"]
-        == "GasBuddy is temporarily blocking automated requests. Try again shortly."
+        == "The gas price service is temporarily blocking automated requests. Try again shortly."
     )
     assert fake_service.call_count == 1
     fake_post.assert_called_once_with(
@@ -203,8 +203,8 @@ def test_search_triggers_a_flaresolverr_redeploy_when_blocked_and_configured():
 
 
 def test_search_does_not_trigger_a_redeploy_when_render_credentials_are_unset():
-    reset_flaresolverr_redeploy_cooldown()
-    app.dependency_overrides[get_gasbuddy_service] = lambda: FailingGasBuddyService(
+    reset_solver_redeploy_cooldown()
+    app.dependency_overrides[get_gas_price_service] = lambda: FailingGasPriceService(
         CloudflareBlocked("Missing Token")
     )
     app.dependency_overrides[get_settings] = lambda: Settings()
@@ -223,14 +223,14 @@ def test_search_does_not_retrigger_a_redeploy_within_the_cooldown_window():
     # A burst of failing requests while a redeploy is already in flight
     # (the new container isn't up yet, so more searches keep failing)
     # must not each fire their own redeploy.
-    reset_flaresolverr_redeploy_cooldown()
-    app.dependency_overrides[get_gasbuddy_service] = lambda: FailingGasBuddyService(
+    reset_solver_redeploy_cooldown()
+    app.dependency_overrides[get_gas_price_service] = lambda: FailingGasPriceService(
         CloudflareBlocked("Missing Token")
     )
     app.dependency_overrides[get_settings] = lambda: Settings(
         render_api_key="rnd_test_key", flaresolverr_service_id="srv-abc123"
     )
-    fake_post = AsyncMock(return_value=_FakeFlareSolverrResponse(201))
+    fake_post = AsyncMock(return_value=_FakeSolverResponse(201))
     try:
         with patch("httpx.AsyncClient.post", new=fake_post):
             client.get("/api/v1/stations/search", params={"query": "60614"})
@@ -242,8 +242,8 @@ def test_search_does_not_retrigger_a_redeploy_within_the_cooldown_window():
 
 
 def test_search_still_returns_502_when_the_redeploy_trigger_itself_fails():
-    reset_flaresolverr_redeploy_cooldown()
-    app.dependency_overrides[get_gasbuddy_service] = lambda: FailingGasBuddyService(
+    reset_solver_redeploy_cooldown()
+    app.dependency_overrides[get_gas_price_service] = lambda: FailingGasPriceService(
         CloudflareBlocked("Missing Token")
     )
     app.dependency_overrides[get_settings] = lambda: Settings(
@@ -261,10 +261,10 @@ def test_search_still_returns_502_when_the_redeploy_trigger_itself_fails():
     assert response.status_code == 502
 
 
-def test_search_does_not_trigger_a_redeploy_for_a_non_cloudflare_error():
-    reset_flaresolverr_redeploy_cooldown()
-    fake_service = FailingGasBuddyService(LibraryError("something else went wrong"))
-    app.dependency_overrides[get_gasbuddy_service] = lambda: fake_service
+def test_search_does_not_trigger_a_redeploy_for_a_non_block_error():
+    reset_solver_redeploy_cooldown()
+    fake_service = FailingGasPriceService(LibraryError("something else went wrong"))
+    app.dependency_overrides[get_gas_price_service] = lambda: fake_service
     app.dependency_overrides[get_settings] = lambda: Settings(
         render_api_key="rnd_test_key", flaresolverr_service_id="srv-abc123"
     )
@@ -280,10 +280,10 @@ def test_search_does_not_trigger_a_redeploy_for_a_non_cloudflare_error():
     fake_post.assert_not_called()
 
 
-class _FakeFlareSolverrResponse:
+class _FakeSolverResponse:
     """Stands in for httpx.Response — status_code and (for the Render
     restart call's own diagnostic logging) text are read by
-    warmup_flaresolverr_container."""
+    warmup_solver_container."""
 
     def __init__(self, status_code: int, text: str = ""):
         self.status_code = status_code
@@ -300,7 +300,7 @@ def test_warmup_container_reports_awake_with_no_solver_configured_and_makes_no_c
         app.dependency_overrides.clear()
 
     # Nothing configured means nothing to wake — and critically, no
-    # network call at all, so this never adds load against GasBuddy.
+    # network call at all, so this never adds load against the gas-price lookup.
     assert response.status_code == 200
     assert response.json() == {"awake": True}
     fake_get.assert_not_called()
@@ -308,9 +308,9 @@ def test_warmup_container_reports_awake_with_no_solver_configured_and_makes_no_c
 
 def test_warmup_container_strips_the_v1_suffix_and_reports_awake_on_200():
     app.dependency_overrides[get_settings] = lambda: Settings(
-        gasbuddy_solver_url="https://flaresolverr-example.onrender.com/v1"
+        gasbuddy_solver_url="https://solver-example.onrender.com/v1"
     )
-    fake_get = AsyncMock(return_value=_FakeFlareSolverrResponse(200))
+    fake_get = AsyncMock(return_value=_FakeSolverResponse(200))
     try:
         with patch("httpx.AsyncClient.get", new=fake_get):
             response = client.post("/api/v1/stations/warmup-container")
@@ -319,19 +319,19 @@ def test_warmup_container_strips_the_v1_suffix_and_reports_awake_on_200():
 
     assert response.status_code == 200
     assert response.json() == {"awake": True}
-    # Pings FlareSolverr's own lightweight health check, not the /v1
-    # solve endpoint — this must never resemble a real GasBuddy request.
-    fake_get.assert_called_once_with("https://flaresolverr-example.onrender.com")
+    # Pings the solver's own lightweight health check, not the /v1
+    # solve endpoint — this must never resemble a real gas-price-lookup request.
+    fake_get.assert_called_once_with("https://solver-example.onrender.com")
 
 
 def test_warmup_container_reports_not_awake_on_a_non_200_response():
     app.dependency_overrides[get_settings] = lambda: Settings(
-        gasbuddy_solver_url="https://flaresolverr-example.onrender.com/v1"
+        gasbuddy_solver_url="https://solver-example.onrender.com/v1"
     )
     try:
         with patch(
             "httpx.AsyncClient.get",
-            new=AsyncMock(return_value=_FakeFlareSolverrResponse(503)),
+            new=AsyncMock(return_value=_FakeSolverResponse(503)),
         ):
             response = client.post("/api/v1/stations/warmup-container")
     finally:
@@ -343,7 +343,7 @@ def test_warmup_container_reports_not_awake_on_a_non_200_response():
 
 def test_warmup_container_reports_not_awake_without_raising_when_unreachable():
     app.dependency_overrides[get_settings] = lambda: Settings(
-        gasbuddy_solver_url="https://flaresolverr-example.onrender.com/v1"
+        gasbuddy_solver_url="https://solver-example.onrender.com/v1"
     )
     try:
         with patch(
@@ -366,7 +366,7 @@ def test_warmup_container_never_triggers_a_render_redeploy_even_when_configured(
     # search actually gets blocked (see the redeploy tests above), never
     # unconditionally on every app launch.
     app.dependency_overrides[get_settings] = lambda: Settings(
-        gasbuddy_solver_url="https://flaresolverr-example.onrender.com/v1",
+        gasbuddy_solver_url="https://solver-example.onrender.com/v1",
         render_api_key="rnd_test_key",
         flaresolverr_service_id="srv-abc123",
     )
@@ -376,7 +376,7 @@ def test_warmup_container_never_triggers_a_render_redeploy_even_when_configured(
             patch("httpx.AsyncClient.post", new=fake_post),
             patch(
                 "httpx.AsyncClient.get",
-                new=AsyncMock(return_value=_FakeFlareSolverrResponse(200)),
+                new=AsyncMock(return_value=_FakeSolverResponse(200)),
             ),
         ):
             response = client.post("/api/v1/stations/warmup-container")

@@ -3,20 +3,20 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from app.services import statcan_client
-from app.services.statcan_client import StatCanService
+from app.services import ca_trend_client
+from app.services.ca_trend_client import CaTrendService
 
 
 @pytest.fixture(autouse=True)
-def _clear_statcan_cache():
-    # Module-level cache (see statcan_client.py's own comment) — reset
+def _clear_ca_trend_cache():
+    # Module-level cache (see ca_trend_client.py's own comment) — reset
     # between tests so one test's fetch doesn't leak into the next.
-    statcan_client._cache = None
+    ca_trend_client._cache = None
     yield
-    statcan_client._cache = None
+    ca_trend_client._cache = None
 
 
-class _FakeStatCanResponse:
+class _FakeCaTrendResponse:
     def __init__(self, body):
         self._body = body
 
@@ -43,11 +43,11 @@ def _payload(previous_value, latest_value, previous_period, latest_period):
 
 @pytest.mark.asyncio
 async def test_computes_the_trend_from_the_two_latest_data_points():
-    fake_response = _FakeStatCanResponse(
+    fake_response = _FakeCaTrendResponse(
         _payload(169.4, 175.5, "2026-06-01", "2026-07-01")
     )
     with patch("httpx.AsyncClient.post", new=AsyncMock(return_value=fake_response)):
-        trend = await StatCanService().latest_trend()
+        trend = await CaTrendService().latest_trend()
 
     assert trend is not None
     assert trend.previous_value == 169.4
@@ -58,35 +58,35 @@ async def test_computes_the_trend_from_the_two_latest_data_points():
 
 @pytest.mark.asyncio
 async def test_sends_the_confirmed_gasoline_vector_id():
-    fake_response = _FakeStatCanResponse(
+    fake_response = _FakeCaTrendResponse(
         _payload(169.4, 175.5, "2026-06-01", "2026-07-01")
     )
     fake_post = AsyncMock(return_value=fake_response)
     with patch("httpx.AsyncClient.post", new=fake_post):
-        await StatCanService().latest_trend()
+        await CaTrendService().latest_trend()
 
     _, kwargs = fake_post.call_args
     assert kwargs["json"] == [
-        {"vectorId": statcan_client.GASOLINE_VECTOR_ID, "latestN": 2}
+        {"vectorId": ca_trend_client.GASOLINE_VECTOR_ID, "latestN": 2}
     ]
 
 
 @pytest.mark.asyncio
 async def test_returns_none_when_fewer_than_two_points_are_returned():
-    fake_response = _FakeStatCanResponse(
+    fake_response = _FakeCaTrendResponse(
         [{"status": "SUCCESS", "object": {"vectorDataPoint": [{"refPer": "2026-07-01", "value": 175.5}]}}]
     )
     with patch("httpx.AsyncClient.post", new=AsyncMock(return_value=fake_response)):
-        trend = await StatCanService().latest_trend()
+        trend = await CaTrendService().latest_trend()
 
     assert trend is None
 
 
 @pytest.mark.asyncio
 async def test_returns_none_on_a_malformed_response():
-    fake_response = _FakeStatCanResponse({"unexpected": "shape"})
+    fake_response = _FakeCaTrendResponse({"unexpected": "shape"})
     with patch("httpx.AsyncClient.post", new=AsyncMock(return_value=fake_response)):
-        trend = await StatCanService().latest_trend()
+        trend = await CaTrendService().latest_trend()
 
     assert trend is None
 
@@ -95,19 +95,19 @@ async def test_returns_none_on_a_malformed_response():
 async def test_returns_none_when_the_request_fails():
     fake_post = AsyncMock(side_effect=httpx.ConnectError("boom"))
     with patch("httpx.AsyncClient.post", new=fake_post):
-        trend = await StatCanService().latest_trend()
+        trend = await CaTrendService().latest_trend()
 
     assert trend is None
 
 
 @pytest.mark.asyncio
 async def test_reuses_the_cached_trend_without_a_second_request():
-    fake_response = _FakeStatCanResponse(
+    fake_response = _FakeCaTrendResponse(
         _payload(169.4, 175.5, "2026-06-01", "2026-07-01")
     )
     fake_post = AsyncMock(return_value=fake_response)
     with patch("httpx.AsyncClient.post", new=fake_post):
-        service = StatCanService()
+        service = CaTrendService()
         await service.latest_trend()
         await service.latest_trend()
 
@@ -123,11 +123,11 @@ async def test_retries_on_the_next_call_after_a_failure_instead_of_caching_it():
     fake_post = AsyncMock(
         side_effect=[
             httpx.ConnectError("boom"),
-            _FakeStatCanResponse(_payload(169.4, 175.5, "2026-06-01", "2026-07-01")),
+            _FakeCaTrendResponse(_payload(169.4, 175.5, "2026-06-01", "2026-07-01")),
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        service = StatCanService()
+        service = CaTrendService()
         first = await service.latest_trend()
         second = await service.latest_trend()
 

@@ -20,9 +20,10 @@ type Location = {lat: number; lon: number};
 
 // The part of a forecast worth surviving a tab switch: which location it
 // was fetched for, and the result. Without this, switching to another tab
-// and back would refetch from scratch every time — the same GasBuddy
-// request the Gas tab just made, again, for no new information (GasBuddy
-// is an unofficial, rate-limit-sensitive scraper, so that's not free).
+// and back would refetch from scratch every time — the same gas-price
+// request the Gas tab just made, again, for no new information (the
+// underlying lookup is an unofficial, rate-limit-sensitive scraper, so
+// that's not free).
 export type PersistedForecast = {
   searchLocation: Location | null;
   forecast: GasPriceForecast | null;

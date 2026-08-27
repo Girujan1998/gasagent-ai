@@ -40,7 +40,7 @@ it('renders correctly', async () => {
   });
 });
 
-it('shows the app once the startup warmup (health + FlareSolverr container wake) resolves', async () => {
+it('shows the app once the startup warmup (health + anti-bot solver container wake) resolves', async () => {
   let call = 0;
   const responses = [healthResponse(), warmupContainerResponse(true)];
   global.fetch = jest.fn(() =>
@@ -58,7 +58,7 @@ it('shows the app once the startup warmup (health + FlareSolverr container wake)
 it('lets the user into the app after the warmup timeout, even if the container never wakes', async () => {
   jest.useFakeTimers();
   // Health resolves normally; the container-warmup call hangs forever
-  // (e.g. FlareSolverr genuinely crashed) — the app must still proceed
+  // (e.g. the solver genuinely crashed) — the app must still proceed
   // once WARMUP_TIMEOUT_MS elapses, rather than blocking indefinitely.
   let call = 0;
   global.fetch = jest.fn(() => {

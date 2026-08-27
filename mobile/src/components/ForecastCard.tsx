@@ -31,23 +31,23 @@ function formatWeekOf(isoDate: string): string {
   return `week of ${monthName} ${parseInt(day, 10)}`;
 }
 
-// Statistics Canada's series is monthly, EIA's is weekly — each source's
-// period_end date is worded to match, rather than a single generic "as of"
-// that would misdescribe either one.
+// The Canadian trend series is monthly, the US one is weekly — each
+// source's period_end date is worded to match, rather than a single
+// generic "as of" that would misdescribe either one.
 function sourceLabel(forecast: GasPriceForecast): string {
-  if (forecast.source === 'statcan') {
+  if (forecast.source === 'ca') {
     return forecast.source_period_end
-      ? `Based on Statistics Canada's national trend for ${formatMonthYear(
+      ? `Based on Canada's national price trend for ${formatMonthYear(
           forecast.source_period_end,
         )}`
-      : "Based on Statistics Canada's national trend";
+      : "Based on Canada's national price trend";
   }
-  if (forecast.source === 'eia') {
+  if (forecast.source === 'us') {
     return forecast.source_period_end
-      ? `Based on the U.S. EIA's national trend (${formatWeekOf(
+      ? `Based on the US national price trend (${formatWeekOf(
           forecast.source_period_end,
         )})`
-      : "Based on the U.S. EIA's national trend";
+      : 'Based on the US national price trend';
   }
   return "No regional trend data available — showing today's average price";
 }

@@ -140,7 +140,7 @@ def test_search_forwards_radius_km():
     assert fake_service.last_call_kwargs["limit"] == 200
 
 
-def test_search_rejects_a_limit_above_nrels_own_maximum():
+def test_search_rejects_a_limit_above_the_directory_sources_own_maximum():
     response = client.get(
         "/api/v1/ev-stations/search",
         params={"lat": 41.85, "lon": -87.65, "limit": 201},

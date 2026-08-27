@@ -58,7 +58,7 @@ function evStationsResponse(names: string[], totalResults: number) {
 // Unlike mockFetchSequence, this actually honors the `limit` query param —
 // needed for the load-more cap test below, where the assertion depends on
 // the server returning as many stations as requested (up to what's
-// actually available), the same way the real AFDC endpoint does.
+// actually available), the same way the real directory-source endpoint does.
 function mockLimitAwareFetch(totalAvailable: number) {
   global.fetch = jest.fn((url: unknown) => {
     const urlStr = url as string;
@@ -307,7 +307,7 @@ it('fetches map data for a 30km radius using the resolved coordinates, not a sec
   // The list call geocodes via `query`...
   expect(calls[0]).toContain('query=Chicago');
   // ...but the map call reuses the coordinates the list call resolved,
-  // requesting NREL's own max (200, "no cap of our own") over a 30km
+  // requesting the directory source's own max (200, "no cap of our own") over a 30km
   // radius rather than List view's small per-page limit.
   expect(calls[1]).toContain('lat=41.85');
   expect(calls[1]).toContain('lon=-87.65');

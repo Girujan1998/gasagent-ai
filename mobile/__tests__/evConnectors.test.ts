@@ -51,7 +51,7 @@ function makeConnectorDetail(
   };
 }
 
-it('maps known AFDC connector codes to driver-recognizable labels', () => {
+it('maps known directory-source connector codes to driver-recognizable labels', () => {
   expect(formatConnectorType('J1772')).toBe('J1772');
   expect(formatConnectorType('CHADEMO')).toBe('CHAdeMO');
   expect(formatConnectorType('J1772COMBO')).toBe('CCS');
@@ -77,7 +77,7 @@ it('omits a zero count from the summary rather than showing "0 Level 1"', () => 
   expect(chargerCountSummary(station)).toBe('3 Level 2');
 });
 
-it("derives a logo from the network's own site, since AFDC has no logo URL of its own", () => {
+it("derives a logo from the network's own site, since the directory source has no logo URL of its own", () => {
   expect(networkLogoUrl('https://www.chargepoint.com')).toBe(
     'https://www.google.com/s2/favicons?sz=64&domain=www.chargepoint.com',
   );
@@ -103,6 +103,6 @@ it('omits whichever specs are not reported', () => {
   expect(formatConnectorSpecs(detail)).toBe('3.7 kW');
 });
 
-it('returns null when a connector has no specs at all, as with an AFDC-sourced connector', () => {
+it('returns null when a connector has no specs at all, as with a directory-sourced connector', () => {
   expect(formatConnectorSpecs(makeConnectorDetail({}))).toBeNull();
 });

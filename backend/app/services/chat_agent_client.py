@@ -10,13 +10,13 @@ from py_gasbuddy import APIError, CloudflareBlocked, LibraryError, MissingSearch
 
 from app.config import get_settings
 from app.models.schemas import ChatMessage, EvStation, FuelPrice, GasStation
-from app.services.afdc_client import AfdcError
+from app.services.ev_directory_client import EvDirectoryError
 from app.services.ev_search import EvSearchService, get_ev_search_service
-from app.services.gasbuddy_client import (
-    GASBUDDY_PAGE_SIZE,
-    GasBuddyService,
+from app.services.gas_price_client import (
+    GAS_PRICE_PAGE_SIZE,
+    GasPriceService,
     format_price_like,
-    get_gasbuddy_service,
+    get_gas_price_service,
 )
 from app.services.forecast import ForecastService, get_forecast_service
 from app.services.geo import haversine_miles
@@ -28,13 +28,13 @@ from app.services.geocoding import GeocodingError, geocode
 # than plain HTTP. generateContent stays close to this app's existing
 # "resend the whole conversation every time" design and needs no SDK at
 # all, just httpx, so it's the starting point for this scaffold.
-GEMINI_URL_TEMPLATE = (
+LLM_URL_TEMPLATE = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 )
 
 # Started as a single, deliberately minimal tool with just `location`, to
 # prove the function-calling round-trip works end to end against
-# Gemini's request/response shape. brands/exclude_brands/max_distance_
+# the model's request/response shape. brands/exclude_brands/max_distance_
 # miles/fuel_grade below rebuild the filtering/sorting the earlier Groq-
 # backed tool had — done in code here too, never left for the model to
 # judge by reading a raw station list itself.
@@ -42,8 +42,8 @@ FIND_STATIONS_TOOL: dict[str, Any] = {
     "name": "find_nearby_gas_stations",
     "description": (
         "Look up real, current gas stations and their live fuel "
-        "prices near a location, using the app's own GasBuddy "
-        "integration. Supports optional filters — one or more "
+        "prices near a location, using the app's own gas-price "
+        "lookup. Supports optional filters — one or more "
         "brands to include, one or more brands to exclude, a "
         "brand recognition tier (major-chain vs. independent), "
         "a maximum distance in miles, and/or a fuel grade to "
@@ -238,7 +238,8 @@ FIND_STATIONS_TOOL: dict[str, Any] = {
     },
 }
 
-# A separate, purely computational tool — none of this touches GasBuddy.
+# A separate, purely computational tool — none of this touches the
+# gas-price lookup.
 # Every one of cost/volume/savings/fill-up math is unreliable for the
 # model to do itself (the same reason price sorting and cheapest/
 # average-price were moved into find_nearby_gas_stations earlier), so
@@ -376,8 +377,8 @@ FIND_EV_CHARGERS_TOOL: dict[str, Any] = {
     "name": "find_nearby_ev_chargers",
     "description": (
         "Look up real, current EV charging stations near a location, "
-        "using the app's own EV charging data (NREL AFDC + Open Charge "
-        "Map). Supports optional filters — networks to include/exclude, "
+        "using the app's own EV charging data (public directory and "
+        "community-sourced data, combined). Supports optional filters — networks to include/exclude, "
         "connector types, charger levels, and min/max/exact thresholds "
         "for total charger count, power (kW), voltage, and amperage — "
         "plus sort_by/sort_order for ranking questions ('highest "
@@ -503,7 +504,7 @@ FIND_EV_CHARGERS_TOOL: dict[str, Any] = {
                     "least this many kW — e.g. 'chargers with at least "
                     "150kW' or 'more than 100kW' (round up to the next "
                     "whole kW for 'more than'). Only some stations report "
-                    "this level of detail (mostly Open Charge Map-sourced "
+                    "this level of detail (mostly community-sourced "
                     "ones); stations without it are correctly excluded, "
                     "not a bug — say so if the user seems surprised by a "
                     "short result. Omit entirely when the user didn't ask "
@@ -732,7 +733,7 @@ FIND_GAS_AND_EV_TOOL: dict[str, Any] = {
 }
 
 # Deliberately has no day-count/date param at all — this projects ONE day
-# (tomorrow) from today's live GasBuddy average and a national trend rate
+# (tomorrow) from today's live gas-price average and a national trend rate
 # (see ForecastService in forecast.py); there's no multi-day series
 # anywhere behind it, so there's nothing further-out to ask this tool for.
 GET_GAS_PRICE_FORECAST_TOOL: dict[str, Any] = {
@@ -772,8 +773,8 @@ GET_GAS_PRICE_FORECAST_TOOL: dict[str, Any] = {
     },
 }
 
-# All five declarations live under one Gemini "Tool" entry — safer than
-# separate Tool objects, which some Gemini API versions don't support
+# All five declarations live under one "Tool" entry — safer than
+# separate Tool objects, which some versions of this API don't support
 # alongside each other when functionDeclarations are involved.
 TOOLS = [
     {
@@ -788,10 +789,10 @@ TOOLS = [
 ]
 
 # Rounds 1-3 offer tools; round 4 omits `tools` entirely, which should
-# make it structurally impossible for Gemini to return another
+# make it structurally impossible for the model to return another
 # functionCall on that round (confirmed live on Groq/OpenAI-compatible
 # APIs for the equivalent case; not yet independently re-confirmed for
-# Gemini specifically). Raised from 3 to 4 so a question needing two
+# this model specifically). Raised from 3 to 4 so a question needing two
 # station searches (e.g. comparing two brands' own cheapest prices) plus
 # one calculate_fuel_cost call still has a round left for the final
 # answer — a plain single-search-then-calculate question still finishes
@@ -800,9 +801,10 @@ TOOLS = [
 MAX_TOOL_ROUNDS = 4
 
 # The pause before fetching a second page of stations (brands/distance
-# lookups only) — py-gasbuddy is an unofficial scraper of GasBuddy's
-# internal API, so two rapid-fire requests in the same tool call look
-# more like a scripted burst than a second page ever does on its own.
+# lookups only) — the underlying gas-price lookup is an unofficial
+# scrape of a third-party site's internal API, so two rapid-fire
+# requests in the same tool call look more like a scripted burst than a
+# second page ever does on its own.
 # Only ever awaited immediately before a genuinely-needed second-page
 # fetch (see _needs_second_page), never speculatively.
 SECOND_PAGE_PAUSE_SECONDS = 1.0
@@ -813,8 +815,9 @@ VALID_FUEL_GRADES = {"regular", "midgrade", "premium", "diesel"}
 
 VALID_BRAND_TIERS = {"major", "lesser_known"}
 
-# The codes AFDC and OCM's EvStation.connector_types already use (OCM's raw
-# titles are mapped onto these same codes in ocm_client.py) — common ways a
+# The codes the EV directory and community sources' EvStation.connector_types
+# already use (the community source's raw titles are mapped onto these same
+# codes in ev_community_client.py) — common ways a
 # model might phrase a connector request, mapped onto them. Anything not
 # here is passed through uppercased rather than hidden, same fallback
 # mobile's formatConnectorType uses for a code it doesn't recognize.
@@ -841,24 +844,26 @@ EV_CHARGER_LEVELS = {"level1", "level2", "dc_fast"}
 
 # Fetched instead of the unfiltered default (20) whenever any EV filter is
 # set — filtering the 20 nearest stations down can leave almost nothing
-# even when better matches exist slightly farther out. AFDC/OCM have no
-# cursor pagination to page through (unlike GasBuddy), so widening the
-# single limit= call is all that's needed; MAX_LIMIT in afdc_client.py is
-# 200, so this is well within range.
+# even when better matches exist slightly farther out. The EV directory/
+# community sources have no cursor pagination to page through (unlike
+# the gas-price lookup), so widening the single limit= call is all
+# that's needed; MAX_LIMIT in ev_directory_client.py is 200, so this is
+# well within range.
 EV_FILTERED_FETCH_LIMIT = 100
 
 # The widened fetch above is for finding good matches, not for relaying
 # all of them back to the model — a broad filter can still leave dozens
 # of matches, and every one costs real tokens in the tool response.
-# Capped at the same size GasBuddy's own page naturally caps gas results
-# to (GASBUDDY_PAGE_SIZE), applied after filtering/sorting so the
+# Capped at the same size the gas-price lookup's own page naturally caps gas results
+# to (GAS_PRICE_PAGE_SIZE), applied after filtering/sorting so the
 # nearest/best matches are always what gets kept.
 EV_MAX_STATIONS_IN_RESPONSE = 20
 
 # find_nearby_gas_and_ev_stations' own EV-side fetch — wider than EV's own
 # unfiltered default (20) since a bigger candidate pool improves
-# closest-pair quality, and safe to widen since AFDC/OCM (unlike
-# GasBuddy) have no rate-limit fragility to worry about.
+# closest-pair quality, and safe to widen since the EV directory/
+# community sources (unlike the gas-price lookup) have no rate-limit
+# fragility to worry about.
 GAS_AND_EV_FETCH_LIMIT = 40
 
 # Each side's returned list is capped separately at this size — this
@@ -902,7 +907,7 @@ WELL_KNOWN_BRANDS = [
     "Pioneer",
 ]
 
-# Confirmed live: Gemini occasionally times out or returns a transient
+# Confirmed live: the model occasionally times out or returns a transient
 # 5xx (server overload) even on an otherwise-normal request. A single
 # retry (2 attempts total, 30s timeout) still let a 502 through — the
 # retry attempt hit a second, back-to-back ReadTimeout — so this allows 2
@@ -910,9 +915,9 @@ WELL_KNOWN_BRANDS = [
 # back timeouts aren't necessarily independent one-off blips and a
 # bigger round 2 request (more prompt data, more "thinking") can
 # genuinely take longer to complete on its own.
-GEMINI_REQUEST_TIMEOUT_SECONDS = 60.0
-GEMINI_MAX_ATTEMPTS = 3
-GEMINI_RETRY_PAUSE_SECONDS = 1.0
+LLM_REQUEST_TIMEOUT_SECONDS = 60.0
+LLM_MAX_ATTEMPTS = 3
+LLM_RETRY_PAUSE_SECONDS = 1.0
 
 NO_LOCATION_MESSAGE = (
     "No location is available for this user right now — the app hasn't "
@@ -971,7 +976,7 @@ SYSTEM_PROMPT = (
     "make you recommend the wrong one as cheapest).\n\n"
     "You have a tool, find_nearby_gas_stations, that returns real, "
     "current gas stations and live fuel prices from the app's own "
-    "GasBuddy integration, optionally filtered by brand, excluded "
+    "gas-price lookup, optionally filtered by brand, excluded "
     "brand, distance, and/or a fuel grade to sort by price. Call it "
     "whenever the user asks about nearby gas stations or gas prices.\n\n"
     "The tool does all filtering, excluding, and price-sorting itself — "
@@ -1147,10 +1152,10 @@ class RateLimitError(ChatError):
 class StationBundle:
     """The real GasStation/EvStation objects behind one tool call (or,
     accumulated across a whole turn) — kept entirely separate from the
-    dict payload sent to Gemini. Every _execute_*_call method returns one
-    of these alongside its Gemini payload; send() merges them across the
+    dict payload sent to the model. Every _execute_*_call method returns one
+    of these alongside its model-call payload; send() merges them across the
     turn's tool calls into the one returned to the API route for card
-    rendering. Never serialized into a ChatMessage or Gemini content."""
+    rendering. Never serialized into a ChatMessage or model content."""
 
     gas_stations: list[GasStation] = field(default_factory=list)
     ev_stations: list[EvStation] = field(default_factory=list)
@@ -1185,8 +1190,8 @@ def _extract_error_message(response: httpx.Response) -> str | None:
 
 def _minutes_since(timestamp: str | None) -> int | None:
     """Age of a FuelPrice.last_updated timestamp, in whole minutes. Never
-    raises — a missing or unparseable timestamp (GasBuddy doesn't
-    guarantee one on every price) just means no age can be shown."""
+    raises — a missing or unparseable timestamp (not every price comes
+    with one) just means no age can be shown."""
     if not timestamp:
         return None
     try:
@@ -1262,8 +1267,8 @@ def _ev_station_summary(s: EvStation) -> dict[str, Any]:
         "level2_count": s.level2_count,
         "dc_fast_count": s.dc_fast_count,
         "connector_types": s.connector_types,
-        # OCM-only (see connector_details' own doc comment in schemas.py) —
-        # empty for AFDC-only stations. Included so the model can relay
+        # Community-source-only (see connector_details' own doc comment in
+        # schemas.py) — empty for directory-only stations. Included so the model can relay
         # *why* a station matched a power/voltage/amperage filter, the
         # same way gas's cheapest/average_price let it relay why a
         # station is the cheapest.
@@ -1358,8 +1363,8 @@ def _needs_second_page(
     max_distance_miles: float | None,
     brand_tier: str | None = None,
 ) -> bool:
-    # Distance, when given, is the sole authority — GasBuddy returns
-    # nearest-first, so once page 1's farthest station already exceeds
+    # Distance, when given, is the sole authority — the gas-price lookup
+    # returns nearest-first, so once page 1's farthest station already exceeds
     # the radius, nothing on page 2 could be closer. exclude_brands and
     # fuel_grade never reach this function at all — they only filter/
     # sort whatever was already fetched, there's no target count or
@@ -1552,8 +1557,8 @@ def _matches_connector_power_specs(
 ) -> bool:
     """True if at least one of the station's connectors satisfies ALL
     three ranges at once (they describe one physical connector's spec
-    together, not three independent ones). OCM-only data — an AFDC-only
-    station (connector_details == []) never matches once any of the three
+    together, not three independent ones). Community-source-only data —
+    a directory-only station (connector_details == []) never matches once any of the three
     ranges is set, since there's nothing here to check it against."""
     for detail in s.connector_details:
         if not _numeric_in_range(detail.power_kw, power_kw_range):
@@ -1628,8 +1633,9 @@ def _closest_gas_ev_pair(
     """The gas station and EV charger nearest to EACH OTHER (not to the
     user) — real Haversine distance between every pair, minimum kept.
     Stations missing coordinates are skipped rather than crashing (rare,
-    but neither GasBuddy nor AFDC/OCM guarantee lat/lon on every
-    result). None if either list is empty or no pair has coordinates on
+    but neither the gas-price lookup nor the EV directory/community
+    sources guarantee lat/lon on every result). None if either list is
+    empty or no pair has coordinates on
     both sides."""
     best: tuple[GasStation, EvStation, float] | None = None
     for gas in gas_stations:
@@ -1707,7 +1713,7 @@ def _sort_ev_stations_by_metric(
     highest value of the field when ranking highest, or its own lowest
     value when ranking lowest — the natural reading of "the highest
     voltage charger at this station." Stations with no connector_details
-    for that field (AFDC-only) have no value to rank by and are dropped,
+    for that field (directory-only) have no value to rank by and are dropped,
     not sorted to one end."""
     reverse = sort_order == "highest"
     if sort_by == "chargers":
@@ -1743,9 +1749,9 @@ def _gas_lookup_error_note(exc: BaseException) -> str:
     if isinstance(exc, MissingSearchData):
         return "Missing search parameters for that location."
     if isinstance(exc, CloudflareBlocked):
-        return "GasBuddy is temporarily blocking automated requests. Try again shortly."
+        return "The gas price service is temporarily blocking automated requests. Try again shortly."
     if isinstance(exc, (LibraryError, APIError)):
-        return f"GasBuddy lookup failed: {exc}"
+        return f"Gas price lookup failed: {exc}"
     return f"Gas station lookup failed unexpectedly: {exc}"
 
 
@@ -1754,7 +1760,7 @@ def _ev_lookup_error_note(exc: BaseException) -> str:
     _gas_lookup_error_note for why this isn't shared with it directly."""
     if isinstance(exc, GeocodingError):
         return LOCATION_NOT_FOUND_MESSAGE
-    if isinstance(exc, AfdcError):
+    if isinstance(exc, EvDirectoryError):
         return f"EV charger lookup failed: {exc}"
     return f"EV charger lookup failed unexpectedly: {exc}"
 
@@ -2050,8 +2056,8 @@ def _calculate_fuel_cost(args: dict[str, Any]) -> dict[str, Any]:
     return {"error": f"Unknown calculate_fuel_cost mode '{mode}'."}
 
 
-def _to_gemini_content(message: ChatMessage) -> dict[str, Any]:
-    # Gemini has no "assistant" role — its equivalent turn is "model".
+def _to_llm_content(message: ChatMessage) -> dict[str, Any]:
+    # The model API has no "assistant" role — its equivalent turn is "model".
     role = "model" if message.role == "assistant" else "user"
     return {"role": role, "parts": [{"text": message.content}]}
 
@@ -2059,14 +2065,14 @@ def _to_gemini_content(message: ChatMessage) -> dict[str, Any]:
 class ChatService:
     def __init__(
         self,
-        gasbuddy: GasBuddyService,
+        gas_price: GasPriceService,
         ev_search: EvSearchService,
         forecast: ForecastService,
     ) -> None:
         settings = get_settings()
         self._api_key = settings.gemini_api_key
         self._model = settings.gemini_model
-        self._gasbuddy = gasbuddy
+        self._gas_price = gas_price
         self._ev_search = ev_search
         self._forecast = forecast
 
@@ -2076,17 +2082,17 @@ class ChatService:
         gas_location: tuple[float, float] | None = None,
         ev_location: tuple[float, float] | None = None,
     ) -> ChatTurnResult:
-        """Send the conversation so far to Gemini and return the agent's
+        """Send the conversation so far to the model and return the agent's
         final reply, running its station-lookup tool as many times as it
         asks to (bounded by MAX_TOOL_ROUNDS) — plus the real station
         objects (if any) behind this turn's tool call(s), for the mobile
-        client to render as cards. These never touch `contents`/Gemini
+        client to render as cards. These never touch `contents`/the model
         and are accumulated purely for the returned ChatTurnResult.
 
         Raises ChatError on any failure. A *missing* key is checked here
-        directly (rather than letting Gemini reject an empty one) since
-        Gemini takes the key as a query parameter — an empty key would
-        just produce a confusing 400 from Gemini itself rather than a
+        directly (rather than letting the model API reject an empty one) since
+        the model API takes the key as a query parameter — an empty key would
+        just produce a confusing 400 from the model API itself rather than a
         clear local error.
         """
         if not self._api_key:
@@ -2094,8 +2100,8 @@ class ChatService:
                 "Chat isn't configured: set GEMINI_API_KEY in backend/.env."
             )
 
-        contents: list[dict[str, Any]] = [_to_gemini_content(m) for m in messages]
-        # Summed across every _call_gemini round for this one turn (a
+        contents: list[dict[str, Any]] = [_to_llm_content(m) for m in messages]
+        # Summed across every _call_llm round for this one turn (a
         # single user message and everything it takes to answer it),
         # printed alongside each round's own usage so the per-turn cost
         # is visible without adding the per-call lines up by hand.
@@ -2106,12 +2112,12 @@ class ChatService:
         for round_num in range(1, MAX_TOOL_ROUNDS + 1):
             include_tools = round_num < MAX_TOOL_ROUNDS
             try:
-                content, call_tokens = await self._call_gemini(
+                content, call_tokens = await self._call_llm(
                     contents, tools=TOOLS if include_tools else None, round_num=round_num
                 )
             except RateLimitError:
                 print(
-                    f"[gemini] turn total: {turn_total_tokens} tokens across "
+                    f"[llm] turn total: {turn_total_tokens} tokens across "
                     f"{round_num - 1} call(s) — rate-limited on call {round_num}"
                 )
                 return ChatTurnResult(
@@ -2125,9 +2131,9 @@ class ChatService:
             if not function_calls:
                 text = "".join(p.get("text", "") for p in parts)
                 if not text:
-                    raise ChatError("Gemini returned an unexpected response shape.")
+                    raise ChatError("The model returned an unexpected response shape.")
                 print(
-                    f"[gemini] turn total: {turn_total_tokens} tokens across "
+                    f"[llm] turn total: {turn_total_tokens} tokens across "
                     f"{round_num} call(s)"
                 )
                 return ChatTurnResult(
@@ -2145,10 +2151,10 @@ class ChatService:
                 turn_gas_stations = _merge_stations(turn_gas_stations, bundle.gas_stations)
                 turn_ev_stations = _merge_stations(turn_ev_stations, bundle.ev_stations)
                 contents.append(
-                    # Confirmed live: this Gemini model's role enum
-                    # rejects "function" (a valid role in some other
-                    # Gemini API versions/docs) — "user" is what actually
-                    # works for feeding a functionResponse part back.
+                    # Confirmed live: this model's role enum rejects
+                    # "function" (a valid role in some other versions/docs
+                    # of this API) — "user" is what actually works for
+                    # feeding a functionResponse part back.
                     {
                         "role": "user",
                         "parts": [
@@ -2162,22 +2168,22 @@ class ChatService:
                     }
                 )
 
-        # Unreachable: the final round never includes `tools`, so Gemini
+        # Unreachable: the final round never includes `tools`, so the model
         # cannot return a functionCall on it — the loop above always
         # returns before falling off the end.
         print(
-            f"[gemini] turn total: {turn_total_tokens} tokens across "
+            f"[llm] turn total: {turn_total_tokens} tokens across "
             f"{MAX_TOOL_ROUNDS} call(s) — forced stop at the round cap"
         )
-        raise ChatError("Gemini returned an unexpected response shape.")
+        raise ChatError("The model returned an unexpected response shape.")
 
-    async def _call_gemini(
+    async def _call_llm(
         self,
         contents: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
         round_num: int,
     ) -> tuple[dict[str, Any], int]:
-        url = GEMINI_URL_TEMPLATE.format(model=self._model)
+        url = LLM_URL_TEMPLATE.format(model=self._model)
         payload: dict[str, Any] = {
             "contents": contents,
             "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
@@ -2186,11 +2192,11 @@ class ChatService:
             payload["tools"] = tools
 
         data: dict[str, Any] | None = None
-        for attempt in range(1, GEMINI_MAX_ATTEMPTS + 1):
-            is_last_attempt = attempt == GEMINI_MAX_ATTEMPTS
+        for attempt in range(1, LLM_MAX_ATTEMPTS + 1):
+            is_last_attempt = attempt == LLM_MAX_ATTEMPTS
             try:
                 async with httpx.AsyncClient(
-                    timeout=GEMINI_REQUEST_TIMEOUT_SECONDS
+                    timeout=LLM_REQUEST_TIMEOUT_SECONDS
                 ) as client:
                     response = await client.post(
                         url, json=payload, params={"key": self._api_key}
@@ -2200,19 +2206,19 @@ class ChatService:
                 break
             except httpx.HTTPStatusError as exc:
                 detail = _extract_error_message(exc.response) or (
-                    f"Gemini request failed with status {exc.response.status_code}."
+                    f"Model request failed with status {exc.response.status_code}."
                 )
                 if exc.response.status_code == 429:
                     raise RateLimitError(detail) from exc
-                # 5xx from Gemini itself is usually transient overload
+                # 5xx from the model API itself is usually transient overload
                 # (confirmed live: a 503 "currently experiencing high
                 # demand") — worth one retry before giving up.
                 if exc.response.status_code >= 500 and not is_last_attempt:
                     print(
-                        f"[gemini] call {round_num}/{MAX_TOOL_ROUNDS} got "
+                        f"[llm] call {round_num}/{MAX_TOOL_ROUNDS} got "
                         f"{exc.response.status_code}, retrying..."
                     )
-                    await asyncio.sleep(GEMINI_RETRY_PAUSE_SECONDS)
+                    await asyncio.sleep(LLM_RETRY_PAUSE_SECONDS)
                     continue
                 raise ChatError(detail) from exc
             except (httpx.TimeoutException, httpx.ConnectError) as exc:
@@ -2223,14 +2229,14 @@ class ChatService:
                 # second later.
                 if not is_last_attempt:
                     print(
-                        f"[gemini] call {round_num}/{MAX_TOOL_ROUNDS} network "
+                        f"[llm] call {round_num}/{MAX_TOOL_ROUNDS} network "
                         f"error ({exc!r}), retrying..."
                     )
-                    await asyncio.sleep(GEMINI_RETRY_PAUSE_SECONDS)
+                    await asyncio.sleep(LLM_RETRY_PAUSE_SECONDS)
                     continue
-                raise ChatError(f"Gemini request failed: {exc}") from exc
+                raise ChatError(f"Model request failed: {exc}") from exc
             except (httpx.HTTPError, ValueError) as exc:
-                raise ChatError(f"Gemini request failed: {exc}") from exc
+                raise ChatError(f"Model request failed: {exc}") from exc
 
         # print rather than `logging` — guarantees this shows up in
         # whatever plain stdout redirect the backend is run with (e.g.
@@ -2238,7 +2244,7 @@ class ChatService:
         # config/level being set up to pass through an app-level logger.
         usage = data.get("usageMetadata", {})
         print(
-            f"[gemini] call {round_num}/{MAX_TOOL_ROUNDS} model={self._model} "
+            f"[llm] call {round_num}/{MAX_TOOL_ROUNDS} model={self._model} "
             f"prompt_tokens={usage.get('promptTokenCount')} "
             f"candidates_tokens={usage.get('candidatesTokenCount')} "
             f"total_tokens={usage.get('totalTokenCount')}"
@@ -2247,7 +2253,7 @@ class ChatService:
         try:
             return data["candidates"][0]["content"], usage.get("totalTokenCount") or 0
         except (KeyError, IndexError, TypeError) as exc:
-            raise ChatError("Gemini returned an unexpected response shape.") from exc
+            raise ChatError("The model returned an unexpected response shape.") from exc
 
     async def _fetch_and_filter_stations(
         self,
@@ -2259,17 +2265,17 @@ class ChatService:
         max_distance_miles: float | None,
         brand_tier: str | None = None,
     ) -> tuple[list[GasStation], float, float, int, bool]:
-        """Fetches page 1 (up to GASBUDDY_PAGE_SIZE stations) and, only if
+        """Fetches page 1 (up to GAS_PRICE_PAGE_SIZE stations) and, only if
         page 1 doesn't already satisfy brands/brand_tier/max_distance_
-        miles, a second page (up to GASBUDDY_PAGE_SIZE more — 40 stations
+        miles, a second page (up to GAS_PRICE_PAGE_SIZE more — 40 stations
         total across at most 2 calls), pausing SECOND_PAGE_PAUSE_SECONDS
-        first so two rapid GasBuddy calls in one tool call don't look
+        first so two rapid gas-price lookup calls in one tool call don't look
         like a scripted burst. Returns (all_stations, lat, lon,
         scanned_count, any_nearby) — exclude_brands/fuel_grade never
         affect how many pages get fetched, only how the already-fetched
         set is filtered/sorted afterward (see _execute_tool_call)."""
-        page1 = await self._gasbuddy.search_nearest_stations(
-            query=query, lat=lat, lon=lon, limit=GASBUDDY_PAGE_SIZE
+        page1 = await self._gas_price.search_nearest_stations(
+            query=query, lat=lat, lon=lon, limit=GAS_PRICE_PAGE_SIZE
         )
         if not page1.stations:
             return [], page1.lat, page1.lon, 0, False
@@ -2279,10 +2285,10 @@ class ChatService:
             page1.stations, brands, max_distance_miles, brand_tier
         ):
             await asyncio.sleep(SECOND_PAGE_PAUSE_SECONDS)
-            page2 = await self._gasbuddy.search_nearest_stations(
+            page2 = await self._gas_price.search_nearest_stations(
                 lat=page1.lat,
                 lon=page1.lon,
-                limit=GASBUDDY_PAGE_SIZE,
+                limit=GAS_PRICE_PAGE_SIZE,
                 cursor=page1.next_cursor,
             )
             all_stations.extend(page2.stations)
@@ -2296,19 +2302,19 @@ class ChatService:
         ev_location: tuple[float, float] | None,
     ) -> tuple[dict[str, Any], StationBundle]:
         """Runs one function call and returns the functionResponse payload
-        to feed back to Gemini, plus the real station objects (if any)
+        to feed back to the model, plus the real station objects (if any)
         behind it for card rendering. Never raises — any failure becomes
         an error message for the model to relay, so one bad call can't
         crash the whole chat request.
 
         The station-bearing _execute_*_call methods take `bundle` and
         fill it in as a side effect, right at the point they already
-        have the real station objects on hand to summarize for Gemini —
+        have the real station objects on hand to summarize for the model —
         cheaper and far less invasive than turning every one of their
         many early error-return statements into a tuple."""
         name = call.get("name")
         # Unlike Groq/OpenAI-style tool_calls (whose arguments arrive as a
-        # JSON string needing json.loads), Gemini's functionCall.args is
+        # JSON string needing json.loads), the model's functionCall.args is
         # already a parsed object.
         args = call.get("args") or {}
         bundle = StationBundle()
@@ -2378,7 +2384,7 @@ class ChatService:
             )
         except GeocodingError:
             return {"error": LOCATION_NOT_FOUND_MESSAGE}
-        except AfdcError as exc:
+        except EvDirectoryError as exc:
             return {"error": f"EV charger lookup failed: {exc}"}
         except Exception as exc:  # a tool call must never crash the whole request
             return {"error": f"EV charger lookup failed unexpectedly: {exc}"}
@@ -2534,8 +2540,8 @@ class ChatService:
             return {"error": NO_LOCATION_MESSAGE}
 
         gas_result, ev_result = await asyncio.gather(
-            self._gasbuddy.search_nearest_stations(
-                query=query, lat=lat, lon=lon, limit=GASBUDDY_PAGE_SIZE
+            self._gas_price.search_nearest_stations(
+                query=query, lat=lat, lon=lon, limit=GAS_PRICE_PAGE_SIZE
             ),
             self._ev_search.search_nearest_ev_stations(
                 query=query, lat=lat, lon=lon, limit=GAS_AND_EV_FETCH_LIMIT, radius_km=max_distance_km
@@ -2697,12 +2703,12 @@ class ChatService:
         except CloudflareBlocked:
             return {
                 "error": (
-                    "GasBuddy is temporarily blocking automated requests. "
+                    "The gas price service is temporarily blocking automated requests. "
                     "Try again shortly."
                 )
             }
         except (LibraryError, APIError) as exc:
-            return {"error": f"GasBuddy lookup failed: {exc}"}
+            return {"error": f"Gas price lookup failed: {exc}"}
         except Exception as exc:  # a tool call must never crash the whole request
             return {"error": f"Gas price forecast failed unexpectedly: {exc}"}
 
@@ -2786,8 +2792,8 @@ class ChatService:
                     brand_tier=brand_tier,
                 )
             else:
-                result = await self._gasbuddy.search_nearest_stations(
-                    query=query, lat=lat, lon=lon, limit=GASBUDDY_PAGE_SIZE
+                result = await self._gas_price.search_nearest_stations(
+                    query=query, lat=lat, lon=lon, limit=GAS_PRICE_PAGE_SIZE
                 )
                 all_stations = result.stations
                 res_lat, res_lon = result.lat, result.lon
@@ -2800,12 +2806,12 @@ class ChatService:
         except CloudflareBlocked:
             return {
                 "error": (
-                    "GasBuddy is temporarily blocking automated requests. "
+                    "The gas price service is temporarily blocking automated requests. "
                     "Try again shortly."
                 )
             }
         except (LibraryError, APIError) as exc:
-            return {"error": f"GasBuddy lookup failed: {exc}"}
+            return {"error": f"Gas price lookup failed: {exc}"}
         except Exception as exc:  # a tool call must never crash the whole request
             return {"error": f"Station lookup failed unexpectedly: {exc}"}
 
@@ -2999,8 +3005,8 @@ class ChatService:
 
 
 def get_chat_service(
-    gasbuddy: GasBuddyService = Depends(get_gasbuddy_service),
+    gas_price: GasPriceService = Depends(get_gas_price_service),
     ev_search: EvSearchService = Depends(get_ev_search_service),
     forecast: ForecastService = Depends(get_forecast_service),
 ) -> ChatService:
-    return ChatService(gasbuddy, ev_search, forecast)
+    return ChatService(gas_price, ev_search, forecast)

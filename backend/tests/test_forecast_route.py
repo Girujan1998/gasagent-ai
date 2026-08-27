@@ -17,7 +17,7 @@ class FakeForecastService:
             forecasted_price=1.72,
             trend_direction="up",
             daily_change_pct=0.001,
-            source="statcan",
+            source="ca",
             source_period_end="2026-07-01",
             stations_sampled=5,
         )
@@ -51,11 +51,11 @@ def test_returns_the_forecast():
     assert body["today_average_price"] == 1.71
     assert body["forecasted_price"] == 1.72
     assert body["trend_direction"] == "up"
-    assert body["source"] == "statcan"
+    assert body["source"] == "ca"
     assert fake_service.last_call_args == (43.36, -80.31)
 
 
-def test_translates_a_gasbuddy_cloudflare_block_into_a_502():
+def test_translates_a_blocked_gas_lookup_into_a_502():
     app.dependency_overrides[get_forecast_service] = lambda: FakeForecastService(
         error=CloudflareBlocked("blocked")
     )

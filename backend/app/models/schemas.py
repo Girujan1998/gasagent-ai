@@ -54,12 +54,13 @@ class StationSearchResponse(BaseModel):
     lon: float
 
 
-class FlareSolverrWarmupResponse(BaseModel):
-    # Whether FlareSolverr's own container responded — this only wakes it
-    # from Render's idle sleep, it never calls GasBuddy itself, so it
-    # carries no rate-limit cost for sessions that never search gas. See
-    # the docstring on warmup_flaresolverr_container for why this exists
-    # as a separate, cheaper endpoint from an actual gas search.
+class ContainerWarmupResponse(BaseModel):
+    # Whether the solver container responded — this only wakes it from
+    # its host's idle sleep, it never calls the gas-price lookup itself,
+    # so it carries no rate-limit cost for sessions that never search
+    # gas. See the docstring on warmup_solver_container for why
+    # this exists as a separate, cheaper endpoint from an actual gas
+    # search.
     awake: bool
 
 
@@ -67,15 +68,17 @@ class EvStationComment(BaseModel):
     author: str
     text: str
     date: str | None = None
-    # OCM's own signal for whether this comment confirms the charger
-    # actually worked when the commenter visited — e.g. "Charged
-    # Successfully" vs "Failed to Charge (Equipment Not Operational)" —
-    # a stronger, more specific signal than the free-text comment alone.
-    # Only OCM has this; always None for a comment sourced any other way.
+    # The community source's own signal for whether this comment
+    # confirms the charger actually worked when the commenter visited —
+    # e.g. "Charged Successfully" vs "Failed to Charge (Equipment Not
+    # Operational)" — a stronger, more specific signal than the
+    # free-text comment alone. Only the community source has this;
+    # always None for a comment sourced any other way.
     checkin_status: str | None = None
-    # OCM's own True/False/unset flag for whether checkin_status counts as
-    # a good or bad report — lets the UI color-code a comment without
-    # having to pattern-match checkin_status's own text.
+    # The community source's own True/False/unset flag for whether
+    # checkin_status counts as a good or bad report — lets the UI
+    # color-code a comment without having to pattern-match
+    # checkin_status's own text.
     checkin_is_positive: bool | None = None
 
 
@@ -100,25 +103,26 @@ class EvStation(BaseModel):
     access_hours: str | None = None
     # "public" or "private".
     access_code: str | None = None
-    # AFDC's own codes: "E" (available), "P" (planned), "T" (temporarily
-    # unavailable). Only "E" stations are requested, but the field is kept
-    # in case that ever changes.
+    # The directory source's own codes: "E" (available), "P" (planned),
+    # "T" (temporarily unavailable). Only "E" stations are requested, but
+    # the field is kept in case that ever changes.
     status_code: str | None = None
     level1_count: int | None = None
     level2_count: int | None = None
     dc_fast_count: int | None = None
     connector_types: list[str] = []
-    # Per-connector electrical specs — OCM-only, AFDC has no equivalent
-    # fields at all. Kept separate from connector_types (a deduplicated
-    # list of codes) since a station can have multiple connectors of the
-    # same type with different specs (e.g. two J1772s at different power).
+    # Per-connector electrical specs — community-source-only, the
+    # directory source has no equivalent fields at all. Kept separate
+    # from connector_types (a deduplicated list of codes) since a
+    # station can have multiple connectors of the same type with
+    # different specs (e.g. two J1772s at different power).
     connector_details: list[EvConnectorDetail] = []
     date_last_confirmed: str | None = None
-    # OCM-only — AFDC has no community layer at all. Comments with no
-    # actual text (a check-in with no written note) are dropped rather
-    # than shown as an empty entry.
+    # Community-source-only — the directory source has no community
+    # layer at all. Comments with no actual text (a check-in with no
+    # written note) are dropped rather than shown as an empty entry.
     comments: list[EvStationComment] = []
-    # OCM-only — user-submitted photos of the station.
+    # Community-source-only — user-submitted photos of the station.
     photo_urls: list[str] = []
 
 
@@ -126,13 +130,13 @@ class GasPriceForecast(BaseModel):
     lat: float
     lon: float
     # The average of nearby stations' current regular-grade price, live
-    # from GasBuddy — None if no nearby station reported one.
+    # from the gas-price lookup — None if no nearby station reported one.
     today_average_price: float | None = None
     # today_average_price projected one day forward using a national
     # trend's daily-prorated rate of change. None whenever
     # today_average_price itself is None (nothing to project from).
     forecasted_price: float | None = None
-    # GasBuddy formats prices differently by region (e.g. "$3.19" in the
+    # Prices are formatted differently by region (e.g. "$3.19" in the
     # US vs "167.7¢" in Canada) and neither raw float alone says which —
     # these mirror whichever convention the sampled stations themselves
     # used, so the client can show a correctly-styled price without
@@ -150,14 +154,15 @@ class GasPriceForecast(BaseModel):
     # 0.0023 = +0.23%/day) — None when no trend source was available, in
     # which case forecasted_price just equals today_average_price.
     daily_change_pct: float | None = None
-    # Which national data source the trend came from. "none" means the
-    # location's country couldn't be resolved, isn't US/Canada, or (for a
-    # US location) no EIA API key is configured — the forecast still shows
-    # today's average, just with no projected change applied.
-    source: str = "none"  # "statcan" | "eia" | "none"
-    # The most recent period the trend source's data covers, e.g. "2026-07-01"
-    # for Statistics Canada's monthly series or an EIA week-ending date —
-    # None when source is "none".
+    # Which country's national trend data the forecast is based on. "none"
+    # means the location's country couldn't be resolved, isn't US/Canada,
+    # or (for a US location) no trend API key is configured — the
+    # forecast still shows today's average, just with no projected change
+    # applied.
+    source: str = "none"  # "ca" | "us" | "none"
+    # The most recent period the trend source's data covers, e.g.
+    # "2026-07-01" for a monthly series or a week-ending date for a
+    # weekly one — None when source is "none".
     source_period_end: str | None = None
     # How many nearby stations contributed to today_average_price — shown
     # for transparency about how reliable the local average is.
@@ -230,7 +235,7 @@ class ChatResponse(BaseModel):
     # The real station objects behind this turn's tool call(s), if any —
     # kept OUTSIDE of `message` deliberately: `message` (as a ChatMessage)
     # is what gets persisted into the client's conversation history and
-    # resent to Gemini on every future turn, and these lists must never
+    # resent to the model on every future turn, and these lists must never
     # end up there (they'd cost real tokens forever). The mobile client
     # uses these to render the same station cards the Gas/EV tabs use,
     # for this response only.

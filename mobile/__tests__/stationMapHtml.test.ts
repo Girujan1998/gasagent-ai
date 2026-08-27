@@ -385,7 +385,7 @@ it('embeds a null rank for an unranked pin, for the page-side class logic to act
 });
 
 it('never emits a literal </script> from station data, which would break out of the embedding tag', () => {
-  // A pin id is attacker/GasBuddy-controlled data as far as this function
+  // A pin id is attacker/gas-price-lookup-controlled data as far as this function
   // is concerned — it must not be able to prematurely close the <script>
   // tag it's embedded in.
   const html = buildStationMapHtml({

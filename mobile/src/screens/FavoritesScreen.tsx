@@ -89,7 +89,7 @@ function FavoritesScreen(): React.JSX.Element {
 
   // Favorites store a snapshot of the station (including price) from when
   // it was saved, so unlike the Gas tab there's nothing to re-fetch on a
-  // timer — pulling to refresh re-queries GasBuddy at each favorite's own
+  // timer — pulling to refresh re-queries the gas-price lookup at each favorite's own
   // coordinates and updates just the price fields, one call per favorite
   // (there's no batch "get by id" endpoint). A favorite with no saved
   // coordinates, or whose lookup fails or no longer matches by station_id,

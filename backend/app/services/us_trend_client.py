@@ -7,7 +7,7 @@ import httpx
 from app.config import get_settings
 from app.services.national_trend import NationalTrend
 
-EIA_URL = "https://api.eia.gov/v2/petroleum/pri/gnd/data/"
+US_TREND_URL = "https://api.eia.gov/v2/petroleum/pri/gnd/data/"
 
 # NUS = the US national average (not a specific state/PADD region) — no
 # reverse-geocoded state name to match against a facet, and a national
@@ -19,15 +19,16 @@ PRODUCT = "EPMR"
 # Confirmed live (without a key, which this app doesn't have one of to
 # test with) that this route + param shape is correct: an unauthenticated
 # request returns 403 API_KEY_MISSING rather than a 404, meaning the path
-# itself is right. The response shape below follows EIA v2's documented
-# convention (a response.data array of {period, value, ...} objects) but
-# hasn't been exercised against a real key — this fails closed (returns
-# None) rather than raising if that assumption is ever wrong.
-CACHE_TTL_SECONDS = 3600 * 6  # EIA releases weekly; no need to poll often.
+# itself is right. The response shape below follows this source's
+# documented convention (a response.data array of {period, value, ...}
+# objects) but hasn't been exercised against a real key — this fails
+# closed (returns None) rather than raising if that assumption is ever
+# wrong.
+CACHE_TTL_SECONDS = 3600 * 6  # This source releases weekly; no need to poll often.
 
 
-class EiaError(Exception):
-    """Raised when the EIA trend lookup fails."""
+class UsTrendError(Exception):
+    """Raised when the US trend lookup fails."""
 
 
 def _parse_trend(payload: Any) -> NationalTrend | None:
@@ -56,12 +57,12 @@ def _parse_trend(payload: Any) -> NationalTrend | None:
     )
 
 
-# Module-level for the same reason as statcan_client.py's cache — a single
+# Module-level for the same reason as ca_trend_client.py's cache — a single
 # national trend value, not keyed by location.
 _cache: tuple[float, NationalTrend | None] | None = None
 
 
-class EiaService:
+class UsTrendService:
     def __init__(self) -> None:
         self._api_key = get_settings().eia_api_key
 
@@ -71,8 +72,9 @@ class EiaService:
         configured or the lookup fails.
 
         No separate check for a missing key — an empty or invalid key
-        fails the request the same way (EIA rejects it with 403), which
-        the generic error handling in _fetch() already turns into None.
+        fails the request the same way (this source rejects it with
+        403), which the generic error handling in _fetch() already
+        turns into None.
         """
         global _cache
         if _cache is not None:
@@ -82,9 +84,9 @@ class EiaService:
 
         trend = await self._fetch()
         # Only a successful fetch is cached — a transient failure (a
-        # network blip, EIA briefly unavailable) must retry on the very
-        # next call rather than silently suppressing every US forecast
-        # for the full CACHE_TTL_SECONDS window.
+        # network blip, the source briefly unavailable) must retry on
+        # the very next call rather than silently suppressing every US
+        # forecast for the full CACHE_TTL_SECONDS window.
         if trend is not None:
             _cache = (time.monotonic(), trend)
         return trend
@@ -102,19 +104,19 @@ class EiaService:
         }
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(EIA_URL, params=params)
+                response = await client.get(US_TREND_URL, params=params)
                 response.raise_for_status()
                 payload = response.json()
         except (httpx.HTTPError, ValueError) as exc:
-            # print rather than `logging` — see gemini_client.py's own
+            # print rather than `logging` — see chat_agent_client.py's own
             # comment on why. Distinguishes "no key configured" (the
             # expected, common case) from a real failure of a configured
-            # key/request in Render's logs.
-            print(f"[eia] request failed: {exc!r}")
+            # key/request in the deploy's own logs.
+            print(f"[us_trend] request failed: {exc!r}")
             return None
 
         return _parse_trend(payload)
 
 
-def get_eia_service() -> EiaService:
-    return EiaService()
+def get_us_trend_service() -> UsTrendService:
+    return UsTrendService()

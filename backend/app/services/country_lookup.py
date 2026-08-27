@@ -2,17 +2,17 @@ import time
 
 import httpx
 
-NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
+REVERSE_GEOCODE_URL = "https://nominatim.openstreetmap.org/reverse"
 
-# Nominatim's usage policy requires a real identifying User-Agent (a
-# generic/browser-like one risks getting blocked) and asks callers to
-# cache aggressively rather than re-querying the same area repeatedly —
-# see https://operations.osmfoundation.org/policies/nominatim/.
+# This reverse-geocoding service's usage policy requires a real
+# identifying User-Agent (a generic/browser-like one risks getting
+# blocked) and asks callers to cache aggressively rather than
+# re-querying the same area repeatedly.
 USER_AGENT = "GasAgentAI/1.0 (gas price forecast; contact: app support)"
 
 # Coarse on purpose — which *country* a point falls in almost never
 # changes within a ~20km cell, and a coarser grid means far fewer requests
-# against Nominatim's shared, rate-limited (1 req/sec) public instance.
+# against this service's shared, rate-limited (1 req/sec) public instance.
 # The one real risk is a cell that straddles the US/Canada border getting
 # tagged by whichever side its rounded center happens to land on — an
 # accepted imprecision for a secondary trend signal, not the headline price.
@@ -31,9 +31,9 @@ def _cache_key(lat: float, lon: float) -> tuple[float, float]:
     )
 
 
-# Module-level, not per-instance — mirrors ocm_client.py's cache (see that
-# file's comment for why): get_country_lookup_service() below hands out a
-# fresh instance per request.
+# Module-level, not per-instance — mirrors ev_community_client.py's cache
+# (see that file's comment for why): get_country_lookup_service() below
+# hands out a fresh instance per request.
 _cache: dict[tuple[float, float], tuple[float, str | None]] = {}
 
 
@@ -53,29 +53,29 @@ class CountryLookupService:
             "lat": grid_lat,
             "lon": grid_lon,
             "format": "json",
-            # Country-level detail only — the coarsest zoom Nominatim
+            # Country-level detail only — the coarsest zoom this service
             # supports, and all this ever needs.
             "zoom": 3,
         }
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
-                    NOMINATIM_URL,
+                    REVERSE_GEOCODE_URL,
                     params=params,
                     headers={"User-Agent": USER_AGENT},
                 )
                 response.raise_for_status()
                 data = response.json()
         except (httpx.HTTPError, ValueError) as exc:
-            # print rather than `logging` — see gemini_client.py's own
+            # print rather than `logging` — see chat_agent_client.py's own
             # comment on why. A failure here is otherwise silent (the
             # caller just falls back to "no regional trend"), so without
-            # this there's no way to tell a genuine Nominatim outage
-            # apart from this specific deploy's IP/User-Agent getting
-            # rate-limited or blocked by their shared public instance —
-            # the same shape of problem this app already has with
-            # GasBuddy's Cloudflare protection.
-            print(f"[country_lookup] Nominatim request failed: {exc!r}")
+            # this there's no way to tell a genuine outage apart from
+            # this specific deploy's IP/User-Agent getting rate-limited
+            # or blocked by the shared public instance — the same shape
+            # of problem this app already has with the gas-price lookup's
+            # own anti-bot protection.
+            print(f"[country_lookup] reverse-geocode request failed: {exc!r}")
             raise CountryLookupError(f"Reverse geocoding failed: {exc}") from exc
 
         country_code = (data.get("address") or {}).get("country_code")

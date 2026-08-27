@@ -7,13 +7,13 @@ from app.config import get_settings
 from app.models.schemas import EvStation
 from app.services.geocoding import geocode
 
-# NREL's developer portal moved from developer.nrel.gov to developer.nlr.gov
-# (the old host's DNS delegation is gone entirely as of 2026-08) — this is
-# the same AFDC API, same api_key, just a renamed host.
-NREL_URL = "https://developer.nlr.gov/api/alt-fuel-stations/v1/nearest.json"
+# This source's developer portal moved hosts (the old host's DNS
+# delegation is gone entirely as of 2026-08) — same API, same api_key,
+# just a renamed host.
+EV_DIRECTORY_URL = "https://developer.nlr.gov/api/alt-fuel-stations/v1/nearest.json"
 
-# Unlike GasBuddy's gas-price lookup (nearest N stations, no distance
-# bound), NREL's search requires a radius. This is generous on purpose —
+# Unlike the gas-price lookup (nearest N stations, no distance bound),
+# this source's search requires a radius. This is generous on purpose —
 # wide enough that `limit` is almost always the thing that actually caps
 # the result count, keeping the "nearest N regardless of exact distance"
 # feel the gas search already has.
@@ -21,14 +21,14 @@ SEARCH_RADIUS_MILES = 50
 
 KM_TO_MILES = 0.621371
 
-# NREL's own hard ceiling — confirmed via its own validation error
+# This source's own hard ceiling — confirmed via its own validation error
 # ("Limit cannot exceed 200"). There's no further pagination beyond this on
 # their end, so 200 is the practical "no maximum" a caller can ask for.
 MAX_LIMIT = 200
 
 
-class AfdcError(Exception):
-    """Raised when the NREL AFDC API request fails."""
+class EvDirectoryError(Exception):
+    """Raised when the EV directory API request fails."""
 
 
 @dataclass
@@ -40,9 +40,10 @@ class EvStationSearchResult:
 
 
 def _build_address(raw: dict[str, Any]) -> str | None:
-    # AFDC reports the street, city, and state as separate fields — combined
-    # here into one line (e.g. "55 Dickson Street, Cambridge, ON") to match
-    # how GasStation.address is already a full address, not just a street.
+    # This source reports the street, city, and state as separate fields —
+    # combined here into one line (e.g. "55 Dickson Street, Cambridge, ON")
+    # to match how GasStation.address is already a full address, not just
+    # a street.
     parts = [raw.get("street_address"), raw.get("city"), raw.get("state")]
     joined = ", ".join(part for part in parts if part)
     return joined or None
@@ -70,7 +71,7 @@ def _to_ev_station(raw: dict[str, Any]) -> EvStation:
     )
 
 
-class AfdcService:
+class EvDirectoryService:
     def __init__(self) -> None:
         self._api_key = get_settings().nrel_api_key
 
@@ -98,18 +99,19 @@ class AfdcService:
             "fuel_type": "ELEC",
             "status": "E",
             "access": "public",
-            # Without this, NREL defaults to US-only and silently returns
-            # zero results for a Canadian location — matches the app's own
-            # US/CA scope (see geocoding.py's AUTOCOMPLETE_COUNTRY_CODES).
+            # Without this, the source defaults to US-only and silently
+            # returns zero results for a Canadian location — matches the
+            # app's own US/CA scope (see geocoding.py's
+            # AUTOCOMPLETE_COUNTRY_CODES).
             "country": "US,CA",
             "limit": limit,
         }
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(NREL_URL, params=params)
+                response = await client.get(EV_DIRECTORY_URL, params=params)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise AfdcError(f"NREL AFDC lookup failed: {exc}") from exc
+            raise EvDirectoryError(f"EV directory lookup failed: {exc}") from exc
 
         data = response.json()
         raw_stations = data.get("fuel_stations") or []
@@ -125,5 +127,5 @@ class AfdcService:
         )
 
 
-def get_afdc_service() -> AfdcService:
-    return AfdcService()
+def get_ev_directory_service() -> EvDirectoryService:
+    return EvDirectoryService()

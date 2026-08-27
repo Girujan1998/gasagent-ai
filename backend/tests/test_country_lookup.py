@@ -17,7 +17,7 @@ def _clear_country_cache():
     country_lookup._cache.clear()
 
 
-class _FakeNominatimResponse:
+class _FakeReverseGeocodeResponse:
     def __init__(self, body):
         self._body = body
 
@@ -30,7 +30,7 @@ class _FakeNominatimResponse:
 
 @pytest.mark.asyncio
 async def test_resolves_a_lowercase_country_code():
-    fake_response = _FakeNominatimResponse(
+    fake_response = _FakeReverseGeocodeResponse(
         {"address": {"country": "Canada", "country_code": "ca"}}
     )
     with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=fake_response)):
@@ -41,7 +41,7 @@ async def test_resolves_a_lowercase_country_code():
 
 @pytest.mark.asyncio
 async def test_uppercases_are_normalized_to_lowercase():
-    fake_response = _FakeNominatimResponse(
+    fake_response = _FakeReverseGeocodeResponse(
         {"address": {"country": "United States", "country_code": "US"}}
     )
     with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=fake_response)):
@@ -52,7 +52,7 @@ async def test_uppercases_are_normalized_to_lowercase():
 
 @pytest.mark.asyncio
 async def test_returns_none_when_the_response_has_no_country():
-    fake_response = _FakeNominatimResponse({"address": {}})
+    fake_response = _FakeReverseGeocodeResponse({"address": {}})
     with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=fake_response)):
         code = await CountryLookupService().resolve_country_code(0, 0)
 
@@ -61,9 +61,9 @@ async def test_returns_none_when_the_response_has_no_country():
 
 @pytest.mark.asyncio
 async def test_sends_a_real_identifying_user_agent():
-    # Nominatim's usage policy requires this — a missing/generic one risks
+    # This reverse-geocoding service's usage policy requires this — a missing/generic one risks
     # the shared public instance blocking requests entirely.
-    fake_response = _FakeNominatimResponse(
+    fake_response = _FakeReverseGeocodeResponse(
         {"address": {"country_code": "ca"}}
     )
     fake_get = AsyncMock(return_value=fake_response)
@@ -76,7 +76,7 @@ async def test_sends_a_real_identifying_user_agent():
 
 @pytest.mark.asyncio
 async def test_reuses_the_cached_result_for_a_nearby_point_without_a_second_request():
-    fake_response = _FakeNominatimResponse({"address": {"country_code": "ca"}})
+    fake_response = _FakeReverseGeocodeResponse({"address": {"country_code": "ca"}})
     fake_get = AsyncMock(return_value=fake_response)
     with patch("httpx.AsyncClient.get", new=fake_get):
         service = CountryLookupService()

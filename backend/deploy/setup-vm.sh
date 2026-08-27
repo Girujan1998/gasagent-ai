@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # One-time bootstrap for a fresh Debian VM (e.g. GCP e2-micro Always Free):
-# FlareSolverr (localhost-only) + the FastAPI backend as a systemd service
-# + Caddy in front for free automatic HTTPS via the <ip>.sslip.io trick.
+# an anti-bot solver (localhost-only) + the FastAPI backend as a systemd
+# service + Caddy in front for free automatic HTTPS via the
+# <ip>.sslip.io trick.
 #
 # Run this ON THE VM over SSH, as the default non-root user (it uses sudo
 # where needed). Edit REPO_URL below first if the repo isn't public.
@@ -11,8 +12,9 @@ REPO_URL="https://github.com/Girujan1998/gasagent-ai.git"
 APP_DIR="$HOME/gasagent-ai"
 
 echo "==> 1/8: swap file (e2-micro's 1GB RAM alone isn't enough headroom for"
-echo "    Chrome + FlareSolverr + the backend running at once — confirmed by"
-echo "    the earlier Render crash, which had no way to add swap at all)"
+echo "    Chrome + the anti-bot solver + the backend running at once —"
+echo "    confirmed by the earlier hosting-provider crash, which had no way"
+echo "    to add swap at all)"
 if [ ! -f /swapfile ]; then
   sudo fallocate -l 2G /swapfile
   sudo chmod 600 /swapfile
@@ -27,14 +29,14 @@ sudo apt-get update -y
 sudo apt-get install -y docker.io git curl gnupg apt-transport-https debian-keyring debian-archive-keyring
 sudo systemctl enable --now docker
 
-echo "==> 3/8: FlareSolverr (bound to localhost only — never internet-reachable)"
-sudo docker rm -f flaresolverr >/dev/null 2>&1 || true
-sudo docker run -d --name flaresolverr \
+echo "==> 3/8: anti-bot solver (bound to localhost only — never internet-reachable)"
+sudo docker rm -f anti-bot-solver >/dev/null 2>&1 || true
+sudo docker run -d --name anti-bot-solver \
   -p 127.0.0.1:8191:8191 \
   --restart unless-stopped \
   ghcr.io/flaresolverr/flaresolverr:latest
 
-echo "==> 4/8: uv + Python 3.13 (py-gasbuddy needs >=3.13)"
+echo "==> 4/8: uv + Python 3.13 (the gas-price lookup library needs >=3.13)"
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 

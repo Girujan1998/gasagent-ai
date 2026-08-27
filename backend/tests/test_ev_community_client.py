@@ -3,21 +3,21 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from app.services import ocm_client
-from app.services.ocm_client import CACHE_TTL_SECONDS, OcmError, OcmService
+from app.services import ev_community_client
+from app.services.ev_community_client import CACHE_TTL_SECONDS, EvCommunityError, EvCommunityService
 
 
 @pytest.fixture(autouse=True)
-def _clear_ocm_cache():
-    # The cache is module-level (see ocm_client.py's own comment on why),
+def _clear_ev_community_cache():
+    # The cache is module-level (see ev_community_client.py's own comment on why),
     # so it has to be reset between tests or one test's fetch would leak
     # into the next as a false cache hit.
-    ocm_client._cache.clear()
+    ev_community_client._cache.clear()
     yield
-    ocm_client._cache.clear()
+    ev_community_client._cache.clear()
 
 
-class _FakeOcmResponse:
+class _FakeCommunityResponse:
     def __init__(self, body):
         self._body = body
 
@@ -31,7 +31,7 @@ class _FakeOcmResponse:
 def _raw_poi(**overrides):
     raw = {
         "UUID": "abc-123",
-        "DataProvider": {"Title": "Open Charge Map Contributors"},
+        "DataProvider": {"Title": "Community Contributors"},
         "OperatorInfo": {
             "Title": "EVgo Network",
             "WebsiteURL": "https://www.evgo.com",
@@ -70,23 +70,23 @@ def _raw_poi(**overrides):
     return raw
 
 
-def _afdc_import_poi(**overrides):
+def _directory_import_poi(**overrides):
     return _raw_poi(
         UUID="def-456",
-        DataProvider={"Title": "afdc.energy.gov"},
+        DataProvider={"Title": "directory-source.example"},
         **overrides,
     )
 
 
 @pytest.mark.asyncio
-async def test_maps_ocm_fields_onto_ev_station():
-    fake_response = _FakeOcmResponse([_raw_poi()])
+async def test_maps_community_fields_onto_ev_station():
+    fake_response = _FakeCommunityResponse([_raw_poi()])
     with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=fake_response)):
-        stations = await OcmService().nearby_supplement_stations(41.85, -87.65)
+        stations = await EvCommunityService().nearby_supplement_stations(41.85, -87.65)
 
     assert len(stations) == 1
     station = stations[0]
-    assert station.station_id == "ocm-abc-123"
+    assert station.station_id == "community-abc-123"
     assert station.name == "Riverwalk Fast Charge"
     assert station.network == "EVgo Network"
     assert station.network_web == "https://www.evgo.com"
@@ -123,7 +123,7 @@ async def test_maps_ocm_fields_onto_ev_station():
 
 @pytest.mark.asyncio
 async def test_maps_comments_and_drops_blank_ones():
-    fake_response = _FakeOcmResponse(
+    fake_response = _FakeCommunityResponse(
         [
             _raw_poi(
                 UserComments=[
@@ -149,7 +149,7 @@ async def test_maps_comments_and_drops_blank_ones():
         ]
     )
     with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=fake_response)):
-        stations = await OcmService().nearby_supplement_stations(41.85, -87.65)
+        stations = await EvCommunityService().nearby_supplement_stations(41.85, -87.65)
 
     comments = stations[0].comments
     assert len(comments) == 1
@@ -162,22 +162,22 @@ async def test_maps_comments_and_drops_blank_ones():
 
 @pytest.mark.asyncio
 async def test_maps_photo_urls_and_drops_disabled_or_video_items():
-    fake_response = _FakeOcmResponse(
+    fake_response = _FakeCommunityResponse(
         [
             _raw_poi(
                 MediaItems=[
                     {
-                        "ItemURL": "https://media.openchargemap.io/photo1.jpg",
+                        "ItemURL": "https://media.example.com/photo1.jpg",
                         "IsEnabled": True,
                         "IsVideo": False,
                     },
                     {
-                        "ItemURL": "https://media.openchargemap.io/disabled.jpg",
+                        "ItemURL": "https://media.example.com/disabled.jpg",
                         "IsEnabled": False,
                         "IsVideo": False,
                     },
                     {
-                        "ItemURL": "https://media.openchargemap.io/video.mp4",
+                        "ItemURL": "https://media.example.com/video.mp4",
                         "IsEnabled": True,
                         "IsVideo": True,
                     },
@@ -186,50 +186,52 @@ async def test_maps_photo_urls_and_drops_disabled_or_video_items():
         ]
     )
     with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=fake_response)):
-        stations = await OcmService().nearby_supplement_stations(41.85, -87.65)
+        stations = await EvCommunityService().nearby_supplement_stations(41.85, -87.65)
 
     assert stations[0].photo_urls == [
-        "https://media.openchargemap.io/photo1.jpg"
+        "https://media.example.com/photo1.jpg"
     ]
 
 
 @pytest.mark.asyncio
 async def test_does_not_filter_by_data_provider():
-    # An AFDC-tagged POI isn't necessarily a current duplicate — OCM's copy
-    # can go stale after AFDC's own live feed drops a station (confirmed
-    # live for a real station: tagged afdc.energy.gov, no status update
-    # since 2019, and genuinely absent from AfdcService's current results).
-    # So this is left for ev_search.py's proximity dedup against the
-    # search's *actual* AFDC results, not decided here by a source tag.
-    fake_response = _FakeOcmResponse([_raw_poi(), _afdc_import_poi()])
+    # A directory-tagged POI isn't necessarily a current duplicate — the
+    # community source's copy can go stale after the directory source's
+    # own live feed drops a station (confirmed live for a real station:
+    # tagged with a stale directory-source provider, no status update
+    # since 2019, and genuinely absent from EvDirectoryService's current
+    # results). So this is left for ev_search.py's proximity dedup against
+    # the search's *actual* directory-source results, not decided here by
+    # a source tag.
+    fake_response = _FakeCommunityResponse([_raw_poi(), _directory_import_poi()])
     with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=fake_response)):
-        stations = await OcmService().nearby_supplement_stations(41.85, -87.65)
+        stations = await EvCommunityService().nearby_supplement_stations(41.85, -87.65)
 
-    assert {s.station_id for s in stations} == {"ocm-abc-123", "ocm-def-456"}
+    assert {s.station_id for s in stations} == {"community-abc-123", "community-def-456"}
 
 
 @pytest.mark.asyncio
 async def test_drops_a_poi_with_no_coordinates():
-    fake_response = _FakeOcmResponse(
+    fake_response = _FakeCommunityResponse(
         [_raw_poi(AddressInfo={**_raw_poi()["AddressInfo"], "Latitude": None})]
     )
     with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=fake_response)):
-        stations = await OcmService().nearby_supplement_stations(41.85, -87.65)
+        stations = await EvCommunityService().nearby_supplement_stations(41.85, -87.65)
 
     assert stations == []
 
 
 @pytest.mark.asyncio
 async def test_sends_expected_request_params():
-    fake_response = _FakeOcmResponse([])
+    fake_response = _FakeCommunityResponse([])
     fake_get = AsyncMock(return_value=fake_response)
     with patch("httpx.AsyncClient.get", new=fake_get):
-        await OcmService().nearby_supplement_stations(41.85, -87.65)
+        await EvCommunityService().nearby_supplement_stations(41.85, -87.65)
 
     _, kwargs = fake_get.call_args
     params = kwargs["params"]
     assert params["distanceunit"] == "Miles"
-    # 10/20/30/50/75 are OCM's own IsOperational=true status codes.
+    # 10/20/30/50/75 are this source's own IsOperational=true status codes.
     assert params["statustypeid"] == "10,20,30,50,75"
     # 1=Public, 4=Membership Required, 5=Pay At Location, 7=Notice
     # Required — all genuinely public/usable, unlike Private or Unknown.
@@ -241,11 +243,11 @@ async def test_sends_expected_request_params():
 async def test_snaps_the_query_point_to_a_coarse_grid_before_requesting():
     # Two nearby points a fraction of a degree apart should share one grid
     # cell (and therefore one cache entry / one real request) rather than
-    # each issuing their own OCM call.
-    fake_response = _FakeOcmResponse([])
+    # each issuing their own request against this source.
+    fake_response = _FakeCommunityResponse([])
     fake_get = AsyncMock(return_value=fake_response)
     with patch("httpx.AsyncClient.get", new=fake_get):
-        await OcmService().nearby_supplement_stations(41.8501, -87.6499)
+        await EvCommunityService().nearby_supplement_stations(41.8501, -87.6499)
 
     _, kwargs = fake_get.call_args
     params = kwargs["params"]
@@ -255,10 +257,10 @@ async def test_snaps_the_query_point_to_a_coarse_grid_before_requesting():
 
 @pytest.mark.asyncio
 async def test_reuses_the_cached_result_for_a_nearby_point_without_a_second_request():
-    fake_response = _FakeOcmResponse([_raw_poi()])
+    fake_response = _FakeCommunityResponse([_raw_poi()])
     fake_get = AsyncMock(return_value=fake_response)
     with patch("httpx.AsyncClient.get", new=fake_get):
-        service = OcmService()
+        service = EvCommunityService()
         await service.nearby_supplement_stations(41.83, -87.63)
         # A different point, but within the same ~11km grid cell.
         await service.nearby_supplement_stations(41.84, -87.64)
@@ -268,17 +270,17 @@ async def test_reuses_the_cached_result_for_a_nearby_point_without_a_second_requ
 
 @pytest.mark.asyncio
 async def test_refetches_once_the_cache_entry_has_expired():
-    fake_response = _FakeOcmResponse([_raw_poi()])
+    fake_response = _FakeCommunityResponse([_raw_poi()])
     fake_get = AsyncMock(return_value=fake_response)
     with patch("httpx.AsyncClient.get", new=fake_get), patch(
-        "app.services.ocm_client.time.monotonic",
+        "app.services.ev_community_client.time.monotonic",
         # 1st call: cache write for the first fetch. 2nd call: the
         # not-yet-expired check on the second call — made to fail (i.e.
         # look expired) by being far past the TTL. 3rd: cache write for
         # the resulting refetch.
         side_effect=[0.0, CACHE_TTL_SECONDS + 1, CACHE_TTL_SECONDS + 1],
     ):
-        service = OcmService()
+        service = EvCommunityService()
         await service.nearby_supplement_stations(41.85, -87.65)
         await service.nearby_supplement_stations(41.85, -87.65)
 
@@ -286,8 +288,8 @@ async def test_refetches_once_the_cache_entry_has_expired():
 
 
 @pytest.mark.asyncio
-async def test_a_failed_ocm_request_raises_ocm_error():
+async def test_a_failed_community_request_raises_community_error():
     fake_get = AsyncMock(side_effect=httpx.ConnectError("boom"))
     with patch("httpx.AsyncClient.get", new=fake_get):
-        with pytest.raises(OcmError):
-            await OcmService().nearby_supplement_stations(41.85, -87.65)
+        with pytest.raises(EvCommunityError):
+            await EvCommunityService().nearby_supplement_stations(41.85, -87.65)

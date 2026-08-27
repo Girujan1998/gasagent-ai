@@ -13,20 +13,20 @@ from app.models.schemas import (
     GasPriceForecast,
     GasStation,
 )
-from app.services import gemini_client
-from app.services.afdc_client import AfdcError
-from app.services.gemini_client import (
+from app.services import chat_agent_client
+from app.services.ev_directory_client import EvDirectoryError
+from app.services.chat_agent_client import (
     EV_FILTERED_FETCH_LIMIT,
     EV_MAX_STATIONS_IN_RESPONSE,
     ChatError,
     ChatService,
 )
 from app.services.ev_search import EvStationSearchResult
-from app.services.gasbuddy_client import GASBUDDY_PAGE_SIZE, StationSearchResult
+from app.services.gas_price_client import GAS_PRICE_PAGE_SIZE, StationSearchResult
 from app.services.geocoding import GeocodingError
 
 
-class _FakeGeminiResponse:
+class _FakeLlmResponse:
     def __init__(self, body, status_code=200):
         self._body = body
         self.status_code = status_code
@@ -43,7 +43,7 @@ class _FakeGeminiResponse:
         return self._body
 
 
-class FakeGasBuddyService:
+class FakeGasPriceService:
     def __init__(self, stations=None, error=None, pages=None):
         # `pages`: {cursor_used_to_request: (stations, next_cursor)};
         # `None` key = page 1. `stations` is shorthand for a single page
@@ -63,7 +63,7 @@ class FakeGasBuddyService:
         if self._error:
             raise self._error
         if cursor not in self._pages:
-            raise AssertionError(f"unexpected GasBuddy call with cursor={cursor!r}")
+            raise AssertionError(f"unexpected gas-price lookup call with cursor={cursor!r}")
         stations, next_cursor = self._pages[cursor]
         return StationSearchResult(
             stations=stations, next_cursor=next_cursor, lat=lat or 0.0, lon=lon or 0.0
@@ -187,7 +187,7 @@ def _make_forecast(**overrides):
         price_change_formatted="+2.0¢",
         trend_direction="up",
         daily_change_pct=0.0133,
-        source="statcan",
+        source="ca",
         source_period_end="2026-07",
         stations_sampled=12,
         today_lowest_price=145.0,
@@ -208,7 +208,7 @@ def _make_forecast(**overrides):
 
 
 def _text_response(text: str, status_code=200):
-    return _FakeGeminiResponse(
+    return _FakeLlmResponse(
         {
             "candidates": [
                 {
@@ -222,7 +222,7 @@ def _text_response(text: str, status_code=200):
 
 
 def _function_call_response(name: str, args: dict):
-    return _FakeGeminiResponse(
+    return _FakeLlmResponse(
         {
             "candidates": [
                 {
@@ -237,12 +237,12 @@ def _function_call_response(name: str, args: dict):
     )
 
 
-def _configured_service(gasbuddy=None, ev_search=None, forecast=None) -> ChatService:
+def _configured_service(gas_price=None, ev_search=None, forecast=None) -> ChatService:
     # Bypasses get_settings() (which reads the real environment) so these
     # tests can exercise a "configured" ChatService regardless of what's
     # actually in .env.
     service = ChatService(
-        gasbuddy or FakeGasBuddyService(),
+        gas_price or FakeGasPriceService(),
         ev_search or FakeEvSearchService(),
         forecast or FakeForecastService(),
     )
@@ -279,7 +279,7 @@ async def test_sends_the_system_instruction_and_full_conversation():
     assert kwargs["params"] == {"key": "test-key"}
     payload = kwargs["json"]
     assert payload["systemInstruction"]["parts"][0]["text"]
-    # "assistant" maps to Gemini's "model" role; "user" stays "user".
+    # "assistant" maps to the model's "model" role; "user" stays "user".
     assert payload["contents"] == [
         {"role": "user", "parts": [{"text": "First"}]},
         {"role": "model", "parts": [{"text": "First reply"}]},
@@ -289,7 +289,7 @@ async def test_sends_the_system_instruction_and_full_conversation():
 
 @pytest.mark.asyncio
 async def test_raises_a_clear_error_when_no_api_key_is_configured():
-    service = ChatService(FakeGasBuddyService(), FakeEvSearchService(), FakeForecastService())
+    service = ChatService(FakeGasPriceService(), FakeEvSearchService(), FakeForecastService())
     service._api_key = ""
     fake_post = AsyncMock()
     with patch("httpx.AsyncClient.post", new=fake_post):
@@ -301,7 +301,7 @@ async def test_raises_a_clear_error_when_no_api_key_is_configured():
 
 @pytest.mark.asyncio
 async def test_raises_with_the_providers_own_error_message_on_a_rejected_request():
-    fake_response = _FakeGeminiResponse(
+    fake_response = _FakeLlmResponse(
         {"error": {"code": 400, "message": "API key not valid", "status": "INVALID_ARGUMENT"}},
         status_code=400,
     )
@@ -315,17 +315,17 @@ async def test_raises_a_generic_error_when_the_failure_response_has_no_message()
     # 500 is retried once (see test_retries_once_on_a_transient_5xx_response)
     # before giving up — every attempt fails here, so this exercises that
     # exhausted-retry path.
-    fake_response = _FakeGeminiResponse({}, status_code=500)
+    fake_response = _FakeLlmResponse({}, status_code=500)
     with patch(
         "httpx.AsyncClient.post", new=AsyncMock(return_value=fake_response)
-    ), patch("app.services.gemini_client.asyncio.sleep", new=AsyncMock()):
+    ), patch("app.services.chat_agent_client.asyncio.sleep", new=AsyncMock()):
         with pytest.raises(ChatError, match="status 500"):
             await _configured_service().send([ChatMessage(role="user", content="Hi")])
 
 
 @pytest.mark.asyncio
 async def test_returns_a_friendly_message_instead_of_erroring_on_a_rate_limit():
-    fake_response = _FakeGeminiResponse(
+    fake_response = _FakeLlmResponse(
         {"error": {"code": 429, "message": "Resource exhausted"}}, status_code=429
     )
     with patch("httpx.AsyncClient.post", new=AsyncMock(return_value=fake_response)):
@@ -334,7 +334,7 @@ async def test_returns_a_friendly_message_instead_of_erroring_on_a_rate_limit():
         )
 
     assert reply.message.role == "assistant"
-    assert reply.message.content == gemini_client.RATE_LIMIT_MESSAGE
+    assert reply.message.content == chat_agent_client.RATE_LIMIT_MESSAGE
 
 
 @pytest.mark.asyncio
@@ -344,11 +344,11 @@ async def test_raises_when_the_request_itself_fails():
     # retry-then-succeed case) before finally raising.
     fake_post = AsyncMock(side_effect=httpx.ConnectError("boom"))
     with patch("httpx.AsyncClient.post", new=fake_post), patch(
-        "app.services.gemini_client.asyncio.sleep", new=AsyncMock()
+        "app.services.chat_agent_client.asyncio.sleep", new=AsyncMock()
     ):
         with pytest.raises(ChatError):
             await _configured_service().send([ChatMessage(role="user", content="Hi")])
-    assert fake_post.call_count == gemini_client.GEMINI_MAX_ATTEMPTS
+    assert fake_post.call_count == chat_agent_client.LLM_MAX_ATTEMPTS
 
 
 @pytest.mark.asyncio
@@ -357,7 +357,7 @@ async def test_retries_once_on_a_transient_network_error():
         side_effect=[httpx.ReadTimeout("timed out"), _text_response("Hello!")]
     )
     with patch("httpx.AsyncClient.post", new=fake_post), patch(
-        "app.services.gemini_client.asyncio.sleep", new=AsyncMock()
+        "app.services.chat_agent_client.asyncio.sleep", new=AsyncMock()
     ) as sleep_mock:
         reply = await _configured_service().send(
             [ChatMessage(role="user", content="Hi")]
@@ -365,7 +365,7 @@ async def test_retries_once_on_a_transient_network_error():
 
     assert reply.message.content == "Hello!"
     assert fake_post.call_count == 2
-    sleep_mock.assert_awaited_once_with(gemini_client.GEMINI_RETRY_PAUSE_SECONDS)
+    sleep_mock.assert_awaited_once_with(chat_agent_client.LLM_RETRY_PAUSE_SECONDS)
 
 
 @pytest.mark.asyncio
@@ -381,7 +381,7 @@ async def test_recovers_from_two_consecutive_transient_timeouts():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post), patch(
-        "app.services.gemini_client.asyncio.sleep", new=AsyncMock()
+        "app.services.chat_agent_client.asyncio.sleep", new=AsyncMock()
     ):
         reply = await _configured_service().send(
             [ChatMessage(role="user", content="Hi")]
@@ -389,19 +389,19 @@ async def test_recovers_from_two_consecutive_transient_timeouts():
 
     assert reply.message.content == "Hello!"
     assert fake_post.call_count == 3
-    assert fake_post.call_count == gemini_client.GEMINI_MAX_ATTEMPTS
+    assert fake_post.call_count == chat_agent_client.LLM_MAX_ATTEMPTS
 
 
 @pytest.mark.asyncio
 async def test_retries_once_on_a_transient_5xx_response():
     fake_post = AsyncMock(
         side_effect=[
-            _FakeGeminiResponse({"error": {"message": "overloaded"}}, status_code=503),
+            _FakeLlmResponse({"error": {"message": "overloaded"}}, status_code=503),
             _text_response("Hello!"),
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post), patch(
-        "app.services.gemini_client.asyncio.sleep", new=AsyncMock()
+        "app.services.chat_agent_client.asyncio.sleep", new=AsyncMock()
     ):
         reply = await _configured_service().send(
             [ChatMessage(role="user", content="Hi")]
@@ -414,7 +414,7 @@ async def test_retries_once_on_a_transient_5xx_response():
 @pytest.mark.asyncio
 async def test_does_not_retry_a_4xx_that_isnt_a_rate_limit():
     fake_post = AsyncMock(
-        return_value=_FakeGeminiResponse(
+        return_value=_FakeLlmResponse(
             {"error": {"message": "API key not valid"}}, status_code=400
         )
     )
@@ -429,7 +429,7 @@ async def test_does_not_retry_a_4xx_that_isnt_a_rate_limit():
 
 @pytest.mark.asyncio
 async def test_raises_on_a_malformed_success_response():
-    fake_response = _FakeGeminiResponse({"candidates": []})
+    fake_response = _FakeLlmResponse({"candidates": []})
     with patch("httpx.AsyncClient.post", new=AsyncMock(return_value=fake_response)):
         with pytest.raises(ChatError):
             await _configured_service().send([ChatMessage(role="user", content="Hi")])
@@ -437,7 +437,7 @@ async def test_raises_on_a_malformed_success_response():
 
 @pytest.mark.asyncio
 async def test_calls_the_tool_and_returns_a_final_reply_using_its_results():
-    gasbuddy = FakeGasBuddyService(stations=[_make_station("Shell", price=158.9)])
+    gas_price = FakeGasPriceService(stations=[_make_station("Shell", price=158.9)])
     fake_post = AsyncMock(
         side_effect=[
             _function_call_response("find_nearby_gas_stations", {}),
@@ -445,18 +445,18 @@ async def test_calls_the_tool_and_returns_a_final_reply_using_its_results():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        reply = await _configured_service(gasbuddy).send(
+        reply = await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="gas near me?")],
             gas_location=(1.0, 2.0),
         )
 
     assert reply.message.content == "Shell is 158.9¢, 0.5 mi away."
-    assert gasbuddy.calls == [
+    assert gas_price.calls == [
         {
             "query": None,
             "lat": 1.0,
             "lon": 2.0,
-            "limit": GASBUDDY_PAGE_SIZE,
+            "limit": GAS_PRICE_PAGE_SIZE,
             "cursor": None,
         }
     ]
@@ -475,7 +475,7 @@ async def test_calls_the_tool_and_returns_a_final_reply_using_its_results():
 
 @pytest.mark.asyncio
 async def test_geocodes_a_named_place_from_the_function_call_args():
-    gasbuddy = FakeGasBuddyService(stations=[_make_station("Esso")])
+    gas_price = FakeGasPriceService(stations=[_make_station("Esso")])
     fake_post = AsyncMock(
         side_effect=[
             _function_call_response(
@@ -485,16 +485,16 @@ async def test_geocodes_a_named_place_from_the_function_call_args():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        await _configured_service(gasbuddy).send(
+        await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="gas in Toronto?")]
         )
 
-    assert gasbuddy.calls == [
+    assert gas_price.calls == [
         {
             "query": "Toronto",
             "lat": None,
             "lon": None,
-            "limit": GASBUDDY_PAGE_SIZE,
+            "limit": GAS_PRICE_PAGE_SIZE,
             "cursor": None,
         }
     ]
@@ -502,7 +502,7 @@ async def test_geocodes_a_named_place_from_the_function_call_args():
 
 @pytest.mark.asyncio
 async def test_uses_the_provided_location_when_the_model_omits_it():
-    gasbuddy = FakeGasBuddyService(stations=[_make_station()])
+    gas_price = FakeGasPriceService(stations=[_make_station()])
     fake_post = AsyncMock(
         side_effect=[
             _function_call_response("find_nearby_gas_stations", {}),
@@ -510,18 +510,18 @@ async def test_uses_the_provided_location_when_the_model_omits_it():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        await _configured_service(gasbuddy).send(
+        await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="gas near me?")],
             gas_location=(43.4, -80.5),
         )
 
-    assert gasbuddy.calls[0]["lat"] == 43.4
-    assert gasbuddy.calls[0]["lon"] == -80.5
+    assert gas_price.calls[0]["lat"] == 43.4
+    assert gas_price.calls[0]["lon"] == -80.5
 
 
 @pytest.mark.asyncio
 async def test_reports_no_location_available_back_to_the_model_without_calling_gasbuddy():
-    gasbuddy = FakeGasBuddyService(stations=[_make_station()])
+    gas_price = FakeGasPriceService(stations=[_make_station()])
     fake_post = AsyncMock(
         side_effect=[
             _function_call_response("find_nearby_gas_stations", {}),
@@ -529,13 +529,13 @@ async def test_reports_no_location_available_back_to_the_model_without_calling_g
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        reply = await _configured_service(gasbuddy).send(
+        reply = await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="gas near me?")],
             gas_location=None,
         )
 
     assert reply.message.content == "Share your location and I can help."
-    assert gasbuddy.calls == []
+    assert gas_price.calls == []
     second_call_payload = fake_post.call_args_list[1].kwargs["json"]
     function_response_contents = [
         c
@@ -550,7 +550,7 @@ async def test_reports_no_location_available_back_to_the_model_without_calling_g
 
 @pytest.mark.asyncio
 async def test_a_tool_execution_error_is_reported_to_the_model_instead_of_crashing():
-    gasbuddy = FakeGasBuddyService(error=CloudflareBlocked("blocked"))
+    gas_price = FakeGasPriceService(error=CloudflareBlocked("blocked"))
     fake_post = AsyncMock(
         side_effect=[
             _function_call_response("find_nearby_gas_stations", {}),
@@ -558,7 +558,7 @@ async def test_a_tool_execution_error_is_reported_to_the_model_instead_of_crashi
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        reply = await _configured_service(gasbuddy).send(
+        reply = await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="gas near me?")],
             gas_location=(1.0, 2.0),
         )
@@ -568,7 +568,7 @@ async def test_a_tool_execution_error_is_reported_to_the_model_instead_of_crashi
 
 @pytest.mark.asyncio
 async def test_stops_calling_the_tool_after_the_round_cap_and_forces_a_final_answer():
-    gasbuddy = FakeGasBuddyService(stations=[_make_station()])
+    gas_price = FakeGasPriceService(stations=[_make_station()])
     fake_post = AsyncMock(
         side_effect=[
             _function_call_response("find_nearby_gas_stations", {}),
@@ -578,13 +578,13 @@ async def test_stops_calling_the_tool_after_the_round_cap_and_forces_a_final_ans
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        reply = await _configured_service(gasbuddy).send(
+        reply = await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="gas near me?")],
             gas_location=(1.0, 2.0),
         )
 
     assert reply.message.content == "Final answer."
-    assert fake_post.call_count == gemini_client.MAX_TOOL_ROUNDS
+    assert fake_post.call_count == chat_agent_client.MAX_TOOL_ROUNDS
     # The final round's request must not offer tools, since that's what
     # structurally forces a plain-text reply instead of another call.
     last_payload = fake_post.call_args_list[-1].kwargs["json"]
@@ -613,7 +613,7 @@ async def test_unknown_tool_name_is_reported_without_crashing():
 
 @pytest.mark.asyncio
 async def test_brand_tier_major_includes_pioneer_and_canadian_tire():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _make_station("Pioneer", distance_miles=0.3),
             _make_station("Canadian Tire", distance_miles=0.5),
@@ -629,7 +629,7 @@ async def test_brand_tier_major_includes_pioneer_and_canadian_tire():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        await _configured_service(gasbuddy).send(
+        await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="big name brands near me")],
             gas_location=(1.0, 2.0),
         )
@@ -645,7 +645,7 @@ async def test_brand_tier_major_includes_pioneer_and_canadian_tire():
 
 @pytest.mark.asyncio
 async def test_brand_tier_lesser_known_excludes_pioneer_and_canadian_tire():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _make_station("Pioneer", distance_miles=0.3),
             _make_station("Canadian Tire", distance_miles=0.5),
@@ -661,7 +661,7 @@ async def test_brand_tier_lesser_known_excludes_pioneer_and_canadian_tire():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        await _configured_service(gasbuddy).send(
+        await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="independent station near me")],
             gas_location=(1.0, 2.0),
         )
@@ -676,7 +676,7 @@ async def test_brand_tier_lesser_known_excludes_pioneer_and_canadian_tire():
 
 @pytest.mark.asyncio
 async def test_brand_tier_fetches_page_two_when_no_major_match_in_page_one():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         pages={
             None: ([_make_station("Joe's Gas", distance_miles=0.3)], "20"),
             "20": ([_make_station("Pioneer", distance_miles=1.2)], None),
@@ -691,20 +691,20 @@ async def test_brand_tier_fetches_page_two_when_no_major_match_in_page_one():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post), patch(
-        "app.services.gemini_client.asyncio.sleep", new=AsyncMock()
+        "app.services.chat_agent_client.asyncio.sleep", new=AsyncMock()
     ) as sleep_mock:
-        await _configured_service(gasbuddy).send(
+        await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="big name brand near me")],
             gas_location=(1.0, 2.0),
         )
 
-    assert len(gasbuddy.calls) == 2
-    sleep_mock.assert_awaited_once_with(gemini_client.SECOND_PAGE_PAUSE_SECONDS)
+    assert len(gas_price.calls) == 2
+    sleep_mock.assert_awaited_once_with(chat_agent_client.SECOND_PAGE_PAUSE_SECONDS)
 
 
 @pytest.mark.asyncio
 async def test_brand_tier_combined_with_fuel_grade():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _make_station("Joe's Gas", distance_miles=0.3, premium=150.0),
             _make_station("Pioneer", distance_miles=0.5, premium=195.9),
@@ -721,7 +721,7 @@ async def test_brand_tier_combined_with_fuel_grade():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        await _configured_service(gasbuddy).send(
+        await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="cheapest big name premium near me?")],
             gas_location=(1.0, 2.0),
         )
@@ -739,7 +739,7 @@ async def test_brand_tier_combined_with_fuel_grade():
 
 @pytest.mark.asyncio
 async def test_brand_tier_reports_a_clear_message_when_none_match():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         pages={
             None: ([_make_station("Joe's Gas", distance_miles=0.3)], "20"),
             "20": ([_make_station("Anne's Fuel", distance_miles=1.2)], None),
@@ -754,9 +754,9 @@ async def test_brand_tier_reports_a_clear_message_when_none_match():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post), patch(
-        "app.services.gemini_client.asyncio.sleep", new=AsyncMock()
+        "app.services.chat_agent_client.asyncio.sleep", new=AsyncMock()
     ):
-        reply = await _configured_service(gasbuddy).send(
+        reply = await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="big name brand near me")],
             gas_location=(1.0, 2.0),
         )
@@ -775,7 +775,7 @@ async def test_brand_tier_reports_a_clear_message_when_none_match():
 
 @pytest.mark.asyncio
 async def test_brands_filter_is_applied_in_code_not_by_the_model():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         pages={
             None: (
                 [
@@ -795,9 +795,9 @@ async def test_brands_filter_is_applied_in_code_not_by_the_model():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post), patch(
-        "app.services.gemini_client.asyncio.sleep", new=AsyncMock()
+        "app.services.chat_agent_client.asyncio.sleep", new=AsyncMock()
     ):
-        await _configured_service(gasbuddy).send(
+        await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="find a Shell near me")],
             gas_location=(1.0, 2.0),
         )
@@ -812,7 +812,7 @@ async def test_brands_filter_is_applied_in_code_not_by_the_model():
 
 @pytest.mark.asyncio
 async def test_multiple_brands_are_or_matched():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         pages={
             None: (
                 [
@@ -834,9 +834,9 @@ async def test_multiple_brands_are_or_matched():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post), patch(
-        "app.services.gemini_client.asyncio.sleep", new=AsyncMock()
+        "app.services.chat_agent_client.asyncio.sleep", new=AsyncMock()
     ):
-        await _configured_service(gasbuddy).send(
+        await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="Shell or Petro-Canada near me")],
             gas_location=(1.0, 2.0),
         )
@@ -851,7 +851,7 @@ async def test_multiple_brands_are_or_matched():
 
 @pytest.mark.asyncio
 async def test_exclude_brands_removes_matching_stations():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _make_station("Petro-Canada", distance_miles=0.3),
             _make_station("Shell", distance_miles=0.5),
@@ -868,7 +868,7 @@ async def test_exclude_brands_removes_matching_stations():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        await _configured_service(gasbuddy).send(
+        await _configured_service(gas_price).send(
             [
                 ChatMessage(
                     role="user",
@@ -888,7 +888,7 @@ async def test_exclude_brands_removes_matching_stations():
 
 @pytest.mark.asyncio
 async def test_brands_and_exclude_brands_combined_excludes_take_precedence():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _make_station("Shell", distance_miles=0.3),
             _make_station("Esso", distance_miles=0.5),
@@ -904,7 +904,7 @@ async def test_brands_and_exclude_brands_combined_excludes_take_precedence():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        await _configured_service(gasbuddy).send(
+        await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="Shell or Esso, but not Shell")],
             gas_location=(1.0, 2.0),
         )
@@ -919,7 +919,7 @@ async def test_brands_and_exclude_brands_combined_excludes_take_precedence():
 
 @pytest.mark.asyncio
 async def test_brands_filter_fetches_page_two_when_not_found_in_page_one():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         pages={
             None: ([_make_station("Esso", distance_miles=0.3)], "20"),
             "20": ([_make_station("Shell", distance_miles=1.2)], None),
@@ -934,24 +934,24 @@ async def test_brands_filter_fetches_page_two_when_not_found_in_page_one():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post), patch(
-        "app.services.gemini_client.asyncio.sleep", new=AsyncMock()
+        "app.services.chat_agent_client.asyncio.sleep", new=AsyncMock()
     ) as sleep_mock:
-        await _configured_service(gasbuddy).send(
+        await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="find a Shell near me")],
             gas_location=(1.0, 2.0),
         )
 
-    assert len(gasbuddy.calls) == 2
-    assert gasbuddy.calls[1]["cursor"] == "20"
-    sleep_mock.assert_awaited_once_with(gemini_client.SECOND_PAGE_PAUSE_SECONDS)
+    assert len(gas_price.calls) == 2
+    assert gas_price.calls[1]["cursor"] == "20"
+    sleep_mock.assert_awaited_once_with(chat_agent_client.SECOND_PAGE_PAUSE_SECONDS)
 
 
 @pytest.mark.asyncio
 async def test_brands_filter_stops_after_page_one_when_found():
     # A next_cursor IS available, but should never be used — the brand
-    # was already found in page 1 (proves the Cloudflare-safety
+    # was already found in page 1 (proves the anti-bot-safety
     # requirement: no unnecessary second call).
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         pages={None: ([_make_station("Shell", distance_miles=0.3)], "20")}
     )
     fake_post = AsyncMock(
@@ -963,20 +963,20 @@ async def test_brands_filter_stops_after_page_one_when_found():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post), patch(
-        "app.services.gemini_client.asyncio.sleep", new=AsyncMock()
+        "app.services.chat_agent_client.asyncio.sleep", new=AsyncMock()
     ) as sleep_mock:
-        await _configured_service(gasbuddy).send(
+        await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="find a Shell near me")],
             gas_location=(1.0, 2.0),
         )
 
-    assert len(gasbuddy.calls) == 1
+    assert len(gas_price.calls) == 1
     sleep_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_distance_fetches_page_two_when_page_one_doesnt_reach_the_radius():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         pages={
             None: ([_make_station("A", distance_miles=0.5)], "20"),
             "20": ([_make_station("B", distance_miles=3.0)], None),
@@ -991,20 +991,20 @@ async def test_distance_fetches_page_two_when_page_one_doesnt_reach_the_radius()
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post), patch(
-        "app.services.gemini_client.asyncio.sleep", new=AsyncMock()
+        "app.services.chat_agent_client.asyncio.sleep", new=AsyncMock()
     ) as sleep_mock:
-        await _configured_service(gasbuddy).send(
+        await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="gas within 4 miles")],
             gas_location=(1.0, 2.0),
         )
 
-    assert len(gasbuddy.calls) == 2
+    assert len(gas_price.calls) == 2
     sleep_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_distance_stops_after_page_one_when_it_already_exceeds_the_radius():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         pages={
             None: (
                 [
@@ -1024,14 +1024,14 @@ async def test_distance_stops_after_page_one_when_it_already_exceeds_the_radius(
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post), patch(
-        "app.services.gemini_client.asyncio.sleep", new=AsyncMock()
+        "app.services.chat_agent_client.asyncio.sleep", new=AsyncMock()
     ) as sleep_mock:
-        await _configured_service(gasbuddy).send(
+        await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="gas within 4 miles")],
             gas_location=(1.0, 2.0),
         )
 
-    assert len(gasbuddy.calls) == 1
+    assert len(gas_price.calls) == 1
     sleep_mock.assert_not_called()
     second_payload = fake_post.call_args_list[1].kwargs["json"]
     function_response = next(
@@ -1043,7 +1043,7 @@ async def test_distance_stops_after_page_one_when_it_already_exceeds_the_radius(
 
 @pytest.mark.asyncio
 async def test_fuel_grade_sorts_and_includes_cheapest_and_average_price():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _make_station("A", distance_miles=0.3, premium=205.0),
             _make_station("B", distance_miles=0.5, premium=195.0),
@@ -1059,7 +1059,7 @@ async def test_fuel_grade_sorts_and_includes_cheapest_and_average_price():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        await _configured_service(gasbuddy).send(
+        await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="cheapest premium near me?")],
             gas_location=(1.0, 2.0),
         )
@@ -1077,7 +1077,7 @@ async def test_fuel_grade_sorts_and_includes_cheapest_and_average_price():
 
 @pytest.mark.asyncio
 async def test_fuel_grade_combined_with_brands_reflects_only_the_matching_set():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _make_station("Shell", distance_miles=0.3, premium=210.0),
             _make_station("Esso", distance_miles=0.4, premium=150.0),
@@ -1094,7 +1094,7 @@ async def test_fuel_grade_combined_with_brands_reflects_only_the_matching_set():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        await _configured_service(gasbuddy).send(
+        await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="cheapest Shell premium near me?")],
             gas_location=(1.0, 2.0),
         )
@@ -1113,7 +1113,7 @@ async def test_fuel_grade_combined_with_brands_reflects_only_the_matching_set():
 
 @pytest.mark.asyncio
 async def test_no_stations_match_the_requested_brand():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         pages={
             None: ([_make_station("Esso", distance_miles=0.3)], "20"),
             "20": ([_make_station("Petro-Canada", distance_miles=1.2)], None),
@@ -1128,9 +1128,9 @@ async def test_no_stations_match_the_requested_brand():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post), patch(
-        "app.services.gemini_client.asyncio.sleep", new=AsyncMock()
+        "app.services.chat_agent_client.asyncio.sleep", new=AsyncMock()
     ):
-        reply = await _configured_service(gasbuddy).send(
+        reply = await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="find a Shell near me")],
             gas_location=(1.0, 2.0),
         )
@@ -1146,7 +1146,7 @@ async def test_no_stations_match_the_requested_brand():
 
 @pytest.mark.asyncio
 async def test_no_stations_report_the_requested_fuel_grade():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[_make_station("A", premium=None), _make_station("B", premium=None)]
     )
     fake_post = AsyncMock(
@@ -1158,7 +1158,7 @@ async def test_no_stations_report_the_requested_fuel_grade():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        reply = await _configured_service(gasbuddy).send(
+        reply = await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="cheapest premium near me?")],
             gas_location=(1.0, 2.0),
         )
@@ -1176,7 +1176,7 @@ async def test_no_stations_report_the_requested_fuel_grade():
 
 
 def test_cost_for_volume():
-    result = gemini_client._calculate_fuel_cost(
+    result = chat_agent_client._calculate_fuel_cost(
         {"mode": "cost_for_volume", "volume_litres": 50, "price_per_litre": 1.45, "price_unit": "dollars"}
     )
     assert result["cost"] == pytest.approx(72.50)
@@ -1184,7 +1184,7 @@ def test_cost_for_volume():
 
 
 def test_cost_for_volume_second_example():
-    result = gemini_client._calculate_fuel_cost(
+    result = chat_agent_client._calculate_fuel_cost(
         {"mode": "cost_for_volume", "volume_litres": 60, "price_per_litre": 1.39, "price_unit": "dollars"}
     )
     assert result["cost"] == pytest.approx(83.40)
@@ -1192,19 +1192,19 @@ def test_cost_for_volume_second_example():
 
 
 def test_cost_for_volume_missing_inputs_is_an_error():
-    result = gemini_client._calculate_fuel_cost({"mode": "cost_for_volume"})
+    result = chat_agent_client._calculate_fuel_cost({"mode": "cost_for_volume"})
     assert "error" in result
 
 
 def test_volume_for_budget():
-    result = gemini_client._calculate_fuel_cost(
+    result = chat_agent_client._calculate_fuel_cost(
         {"mode": "volume_for_budget", "budget": 60, "price_per_litre": 1.42, "price_unit": "dollars"}
     )
     assert result["volume_litres"] == pytest.approx(60 / 1.42)
 
 
 def test_savings_via_two_absolute_prices():
-    result = gemini_client._calculate_fuel_cost(
+    result = chat_agent_client._calculate_fuel_cost(
         {
             "mode": "savings",
             "volume_litres": 50,
@@ -1218,7 +1218,7 @@ def test_savings_via_two_absolute_prices():
 
 
 def test_savings_via_direct_price_difference_in_cents():
-    result = gemini_client._calculate_fuel_cost(
+    result = chat_agent_client._calculate_fuel_cost(
         {
             "mode": "savings",
             "volume_litres": 55,
@@ -1231,14 +1231,14 @@ def test_savings_via_direct_price_difference_in_cents():
 
 
 def test_savings_missing_both_comparison_forms_is_an_error():
-    result = gemini_client._calculate_fuel_cost(
+    result = chat_agent_client._calculate_fuel_cost(
         {"mode": "savings", "volume_litres": 50}
     )
     assert "error" in result
 
 
 def test_fill_up_cost():
-    result = gemini_client._calculate_fuel_cost(
+    result = chat_agent_client._calculate_fuel_cost(
         {
             "mode": "fill_up_cost",
             "tank_capacity_litres": 60,
@@ -1253,7 +1253,7 @@ def test_fill_up_cost():
 
 
 def test_fill_up_cost_invalid_percent_is_an_error():
-    result = gemini_client._calculate_fuel_cost(
+    result = chat_agent_client._calculate_fuel_cost(
         {
             "mode": "fill_up_cost",
             "tank_capacity_litres": 60,
@@ -1266,13 +1266,13 @@ def test_fill_up_cost_invalid_percent_is_an_error():
 
 
 def test_unknown_mode_is_an_error():
-    result = gemini_client._calculate_fuel_cost({"mode": "not_a_real_mode"})
+    result = chat_agent_client._calculate_fuel_cost({"mode": "not_a_real_mode"})
     assert "error" in result
 
 
 @pytest.mark.asyncio
 async def test_cheapest_includes_a_raw_price_and_unit_for_chaining():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[_make_station("Shell", distance_miles=0.5, premium=195.9)]
     )
     fake_post = AsyncMock(
@@ -1284,7 +1284,7 @@ async def test_cheapest_includes_a_raw_price_and_unit_for_chaining():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        await _configured_service(gasbuddy).send(
+        await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="cheapest premium near me?")],
             gas_location=(1.0, 2.0),
         )
@@ -1303,7 +1303,7 @@ async def test_cheapest_includes_a_raw_price_and_unit_for_chaining():
 async def test_max_distance_km_filters_equivalently_to_miles():
     # 5 km ≈ 3.107 miles — a station at 3.0 mi should match, one at 3.5
     # mi should not.
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _make_station("Close", distance_miles=3.0),
             _make_station("Far", distance_miles=3.5),
@@ -1318,7 +1318,7 @@ async def test_max_distance_km_filters_equivalently_to_miles():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        await _configured_service(gasbuddy).send(
+        await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="gas within 5 km")],
             gas_location=(1.0, 2.0),
         )
@@ -1334,7 +1334,7 @@ async def test_max_distance_km_filters_equivalently_to_miles():
 @pytest.mark.asyncio
 async def test_chains_a_station_search_into_a_calculator_call():
     # Mirrors "Find the cheapest Shell and calculate the cost of 60 L."
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[_make_station("Shell", distance_miles=0.5, premium=None)]
     )
     fake_post = AsyncMock(
@@ -1356,7 +1356,7 @@ async def test_chains_a_station_search_into_a_calculator_call():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        reply = await _configured_service(gasbuddy).send(
+        reply = await _configured_service(gas_price).send(
             [
                 ChatMessage(
                     role="user",
@@ -1520,7 +1520,7 @@ async def test_ev_chargers_geocoding_error_gives_the_model_actionable_fallback_o
         ev_search, {"location": "Nowhereville"}, message="EV chargers in Nowhereville"
     )
 
-    assert payload["error"] == gemini_client.LOCATION_NOT_FOUND_MESSAGE
+    assert payload["error"] == chat_agent_client.LOCATION_NOT_FOUND_MESSAGE
     assert "postal code" in payload["error"]
     assert "share their current location" in payload["error"]
     assert "Gas or EV tab" in payload["error"]
@@ -1528,7 +1528,7 @@ async def test_ev_chargers_geocoding_error_gives_the_model_actionable_fallback_o
 
 @pytest.mark.asyncio
 async def test_gas_stations_geocoding_error_gives_the_model_actionable_fallback_options():
-    gasbuddy = FakeGasBuddyService(error=GeocodingError("Could not find that place."))
+    gas_price = FakeGasPriceService(error=GeocodingError("Could not find that place."))
     fake_post = AsyncMock(
         side_effect=[
             _function_call_response(
@@ -1538,7 +1538,7 @@ async def test_gas_stations_geocoding_error_gives_the_model_actionable_fallback_
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        await _configured_service(gasbuddy).send(
+        await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="gas stations in Nowhereville")]
         )
 
@@ -1547,12 +1547,12 @@ async def test_gas_stations_geocoding_error_gives_the_model_actionable_fallback_
         c for c in second_payload["contents"] if "functionResponse" in c["parts"][0]
     )
     payload = function_response["parts"][0]["functionResponse"]["response"]
-    assert payload["error"] == gemini_client.LOCATION_NOT_FOUND_MESSAGE
+    assert payload["error"] == chat_agent_client.LOCATION_NOT_FOUND_MESSAGE
 
 
 @pytest.mark.asyncio
 async def test_ev_chargers_afdc_error_is_reported_not_crashed():
-    ev_search = FakeEvSearchService(error=AfdcError("AFDC is down"))
+    ev_search = FakeEvSearchService(error=EvDirectoryError("EV directory lookup is down"))
     fake_post = AsyncMock(
         side_effect=[
             _function_call_response("find_nearby_ev_chargers", {}),
@@ -1737,7 +1737,7 @@ async def test_ev_amperage_max_filter():
 
 @pytest.mark.asyncio
 async def test_ev_power_spec_filter_excludes_stations_with_no_connector_details():
-    # ChargePoint Station has no connector_details at all (an AFDC-only
+    # ChargePoint Station has no connector_details at all (a directory-source-only
     # station, per the app's own data model) — it must never match a
     # power/voltage/amperage filter, even though it's the only station.
     ev_search = FakeEvSearchService(
@@ -2009,7 +2009,7 @@ def _ev_station_at(name, lat, lon, network=None, distance_miles=0.0):
 
 
 async def _run_combined_call(
-    gasbuddy, ev_search, args, message="find a gas station and EV charger near each other"
+    gas_price, ev_search, args, message="find a gas station and EV charger near each other"
 ):
     fake_post = AsyncMock(
         side_effect=[
@@ -2018,7 +2018,7 @@ async def _run_combined_call(
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        await _configured_service(gasbuddy=gasbuddy, ev_search=ev_search).send(
+        await _configured_service(gas_price=gas_price, ev_search=ev_search).send(
             [ChatMessage(role="user", content=message)],
             gas_location=(1.0, 2.0),
             ev_location=(1.0, 2.0),
@@ -2040,7 +2040,7 @@ def test_closest_gas_ev_pair_finds_the_true_minimum():
         _ev_station_at("Far Tesla", 50.001, -80.001),
     ]
 
-    result = gemini_client._closest_gas_ev_pair(gas_stations, ev_stations)
+    result = chat_agent_client._closest_gas_ev_pair(gas_stations, ev_stations)
 
     assert result is not None
     gas, ev, distance = result
@@ -2052,8 +2052,8 @@ def test_closest_gas_ev_pair_finds_the_true_minimum():
 def test_closest_gas_ev_pair_is_none_when_either_side_is_empty():
     gas_stations = [_gas_station_at("Shell", 43.0, -80.0)]
 
-    assert gemini_client._closest_gas_ev_pair(gas_stations, []) is None
-    assert gemini_client._closest_gas_ev_pair([], []) is None
+    assert chat_agent_client._closest_gas_ev_pair(gas_stations, []) is None
+    assert chat_agent_client._closest_gas_ev_pair([], []) is None
 
 
 def test_closest_gas_ev_pair_skips_stations_missing_coordinates():
@@ -2063,7 +2063,7 @@ def test_closest_gas_ev_pair_skips_stations_missing_coordinates():
     ]
     ev_stations = [_ev_station_at("EV", 43.001, -80.001)]
 
-    result = gemini_client._closest_gas_ev_pair(gas_stations, ev_stations)
+    result = chat_agent_client._closest_gas_ev_pair(gas_stations, ev_stations)
 
     assert result is not None
     gas, _ev, _distance = result
@@ -2072,7 +2072,7 @@ def test_closest_gas_ev_pair_skips_stations_missing_coordinates():
 
 @pytest.mark.asyncio
 async def test_combined_search_surfaces_the_closest_pair_beyond_the_display_cap():
-    cap = gemini_client.GAS_AND_EV_MAX_STATIONS_IN_RESPONSE
+    cap = chat_agent_client.GAS_AND_EV_MAX_STATIONS_IN_RESPONSE
     # The true closest pair (index `cap + 4`) is deliberately ranked LAST
     # by distance-from-user on both sides — proving the cap on the
     # *displayed* lists is applied after pairing, not before (which would
@@ -2086,9 +2086,9 @@ async def test_combined_search_surfaces_the_closest_pair_beyond_the_display_cap(
         for i in range(cap + 4)
     ] + [_ev_station_at(f"EV {cap + 4}", 50.001, -80.001, distance_miles=cap + 4)]
 
-    gasbuddy = FakeGasBuddyService(stations=gas_stations)
+    gas_price = FakeGasPriceService(stations=gas_stations)
     ev_search = FakeEvSearchService(stations=ev_stations)
-    payload = await _run_combined_call(gasbuddy, ev_search, {})
+    payload = await _run_combined_call(gas_price, ev_search, {})
 
     # The pairing logic considered the full fetched set (not just the
     # first `cap` by distance-from-user) — proven by finding the pair
@@ -2112,13 +2112,13 @@ async def test_combined_search_omits_full_station_lists_from_the_model_when_a_pa
     # verified pair to relay — confirmed live, giving it visibility into
     # other nearby stations let it occasionally name one of THOSE instead
     # of the actual closest_pair, even on a first-time request.
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[_gas_station_at("Gas A", 43.0, -80.0), _gas_station_at("Gas B", 43.1, -80.0)]
     )
     ev_search = FakeEvSearchService(
         stations=[_ev_station_at("EV A", 43.001, -80.001)]
     )
-    payload = await _run_combined_call(gasbuddy, ev_search, {})
+    payload = await _run_combined_call(gas_price, ev_search, {})
 
     assert "closest_pair" in payload
     assert "gas_stations" not in payload
@@ -2129,10 +2129,10 @@ async def test_combined_search_omits_full_station_lists_from_the_model_when_a_pa
 
 @pytest.mark.asyncio
 async def test_combined_search_includes_full_station_lists_when_no_pair_exists():
-    gasbuddy = FakeGasBuddyService(stations=[_gas_station_at("Gas A", 43.0, -80.0)])
+    gas_price = FakeGasPriceService(stations=[_gas_station_at("Gas A", 43.0, -80.0)])
     ev_search = FakeEvSearchService(stations=[])
 
-    payload = await _run_combined_call(gasbuddy, ev_search, {})
+    payload = await _run_combined_call(gas_price, ev_search, {})
 
     assert "closest_pair" not in payload
     assert [s["name"] for s in payload["gas_stations"]] == ["Gas A"]
@@ -2148,12 +2148,12 @@ async def test_combined_search_filters_are_applied_before_pairing():
         _ev_station_at("Tesla Close", 43.001, -80.001, network="Tesla"),
         _ev_station_at("ChargePoint Far", 43.06, -80.0, network="ChargePoint"),
     ]
-    gasbuddy = FakeGasBuddyService(stations=gas_stations)
+    gas_price = FakeGasPriceService(stations=gas_stations)
     ev_search = FakeEvSearchService(stations=ev_stations)
 
     # Unfiltered: Esso Close + Tesla Close is the true closest pair.
     unfiltered = await _run_combined_call(
-        FakeGasBuddyService(stations=gas_stations),
+        FakeGasPriceService(stations=gas_stations),
         FakeEvSearchService(stations=ev_stations),
         {},
     )
@@ -2162,7 +2162,7 @@ async def test_combined_search_filters_are_applied_before_pairing():
 
     # Filtered to Shell + ChargePoint: only the farther pair qualifies.
     filtered = await _run_combined_call(
-        gasbuddy, ev_search, {"brands": ["Shell"], "networks": ["ChargePoint"]}
+        gas_price, ev_search, {"brands": ["Shell"], "networks": ["ChargePoint"]}
     )
     assert filtered["closest_pair"]["gas_station"]["name"] == "Shell Far"
     assert filtered["closest_pair"]["ev_charger"]["name"] == "ChargePoint Far"
@@ -2172,44 +2172,44 @@ async def test_combined_search_filters_are_applied_before_pairing():
 
 @pytest.mark.asyncio
 async def test_combined_search_degrades_gracefully_when_only_ev_side_has_matches():
-    gasbuddy = FakeGasBuddyService(stations=[])
+    gas_price = FakeGasPriceService(stations=[])
     ev_search = FakeEvSearchService(stations=[_ev_station_at("EV", 43.0, -80.0)])
 
-    payload = await _run_combined_call(gasbuddy, ev_search, {})
+    payload = await _run_combined_call(gas_price, ev_search, {})
 
     assert payload["ev_station_count"] == 1
     assert payload["gas_station_count"] == 0
     assert "closest_pair" not in payload
     assert "gas_lookup_note" in payload
-    assert gasbuddy.calls and ev_search.calls
+    assert gas_price.calls and ev_search.calls
 
 
 @pytest.mark.asyncio
 async def test_combined_search_reports_a_single_error_when_both_sides_find_nothing():
-    gasbuddy = FakeGasBuddyService(stations=[])
+    gas_price = FakeGasPriceService(stations=[])
     ev_search = FakeEvSearchService(stations=[])
 
-    payload = await _run_combined_call(gasbuddy, ev_search, {})
+    payload = await _run_combined_call(gas_price, ev_search, {})
 
     assert "error" in payload
 
 
 @pytest.mark.asyncio
 async def test_combined_search_geocoding_error_on_both_sides_is_reported_once():
-    gasbuddy = FakeGasBuddyService(error=GeocodingError("not found"))
+    gas_price = FakeGasPriceService(error=GeocodingError("not found"))
     ev_search = FakeEvSearchService(error=GeocodingError("not found"))
 
-    payload = await _run_combined_call(gasbuddy, ev_search, {})
+    payload = await _run_combined_call(gas_price, ev_search, {})
 
-    assert payload["error"] == gemini_client.LOCATION_NOT_FOUND_MESSAGE
+    assert payload["error"] == chat_agent_client.LOCATION_NOT_FOUND_MESSAGE
 
 
 @pytest.mark.asyncio
 async def test_combined_search_one_side_erroring_does_not_crash_the_other():
-    gasbuddy = FakeGasBuddyService(error=CloudflareBlocked("blocked"))
+    gas_price = FakeGasPriceService(error=CloudflareBlocked("blocked"))
     ev_search = FakeEvSearchService(stations=[_ev_station_at("EV", 43.0, -80.0)])
 
-    payload = await _run_combined_call(gasbuddy, ev_search, {})
+    payload = await _run_combined_call(gas_price, ev_search, {})
 
     assert payload["ev_station_count"] == 1
     assert "blocking" in payload["gas_lookup_note"]
@@ -2218,7 +2218,7 @@ async def test_combined_search_one_side_erroring_does_not_crash_the_other():
 
 @pytest.mark.asyncio
 async def test_exclude_gas_and_ev_stations_forces_the_next_nearest_pair():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _gas_station_at("Near Gas", 43.0, -80.0),
             _gas_station_at("Far Gas", 43.5, -80.0),
@@ -2231,7 +2231,7 @@ async def test_exclude_gas_and_ev_stations_forces_the_next_nearest_pair():
         ]
     )
     payload = await _run_combined_call(
-        gasbuddy,
+        gas_price,
         ev_search,
         {"exclude_gas_stations": ["Near Gas"], "exclude_ev_stations": ["Near EV"]},
     )
@@ -2244,11 +2244,11 @@ async def test_exclude_gas_and_ev_stations_forces_the_next_nearest_pair():
 
 @pytest.mark.asyncio
 async def test_excluding_every_gas_station_falls_back_to_the_no_match_note():
-    gasbuddy = FakeGasBuddyService(stations=[_gas_station_at("Only Gas", 43.0, -80.0)])
+    gas_price = FakeGasPriceService(stations=[_gas_station_at("Only Gas", 43.0, -80.0)])
     ev_search = FakeEvSearchService(stations=[_ev_station_at("Only EV", 43.001, -80.001)])
 
     payload = await _run_combined_call(
-        gasbuddy, ev_search, {"exclude_gas_stations": ["Only Gas"]}
+        gas_price, ev_search, {"exclude_gas_stations": ["Only Gas"]}
     )
 
     assert payload["ev_station_count"] == 1
@@ -2262,7 +2262,7 @@ async def test_asking_for_another_pair_with_exclusions_returns_a_genuinely_diffe
     # charger" must produce a real, code-verified DIFFERENT pair — both in
     # the text (via a real second tool call) and in the cards
     # (ChatTurnResult.gas_stations/ev_stations), not a repeat of turn 1's.
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _gas_station_at("Near Gas", 43.0, -80.0),
             _gas_station_at("Far Gas", 43.5, -80.0),
@@ -2282,7 +2282,7 @@ async def test_asking_for_another_pair_with_exclusions_returns_a_genuinely_diffe
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post_1):
-        reply1 = await _configured_service(gasbuddy=gasbuddy, ev_search=ev_search).send(
+        reply1 = await _configured_service(gas_price=gas_price, ev_search=ev_search).send(
             [ChatMessage(role="user", content="find closest gas and ev pair")],
             gas_location=(1.0, 2.0),
             ev_location=(1.0, 2.0),
@@ -2301,7 +2301,7 @@ async def test_asking_for_another_pair_with_exclusions_returns_a_genuinely_diffe
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post_2):
-        reply2 = await _configured_service(gasbuddy=gasbuddy, ev_search=ev_search).send(
+        reply2 = await _configured_service(gas_price=gas_price, ev_search=ev_search).send(
             [
                 ChatMessage(role="user", content="find closest gas and ev pair"),
                 ChatMessage(role="assistant", content=reply1.message.content),
@@ -2361,7 +2361,7 @@ async def test_forecast_relays_all_computed_fields():
 async def test_forecast_geocodes_a_named_place_before_calling_the_service():
     forecast_service = FakeForecastService(result=_make_forecast())
     with patch(
-        "app.services.gemini_client.geocode", new=AsyncMock(return_value=(10.0, 20.0))
+        "app.services.chat_agent_client.geocode", new=AsyncMock(return_value=(10.0, 20.0))
     ):
         payload = await _run_forecast_call(
             forecast_service,
@@ -2378,7 +2378,7 @@ async def test_forecast_reports_no_location_available_without_calling_the_servic
     forecast_service = FakeForecastService(result=_make_forecast())
     payload = await _run_forecast_call(forecast_service, {}, gas_location=None)
 
-    assert payload["error"] == gemini_client.NO_LOCATION_MESSAGE
+    assert payload["error"] == chat_agent_client.NO_LOCATION_MESSAGE
     assert forecast_service.calls == []
 
 
@@ -2386,14 +2386,14 @@ async def test_forecast_reports_no_location_available_without_calling_the_servic
 async def test_forecast_geocoding_error_is_reported():
     forecast_service = FakeForecastService(result=_make_forecast())
     with patch(
-        "app.services.gemini_client.geocode",
+        "app.services.chat_agent_client.geocode",
         new=AsyncMock(side_effect=GeocodingError("not found")),
     ):
         payload = await _run_forecast_call(
             forecast_service, {"location": "Nowhereville"}
         )
 
-    assert payload["error"] == gemini_client.LOCATION_NOT_FOUND_MESSAGE
+    assert payload["error"] == chat_agent_client.LOCATION_NOT_FOUND_MESSAGE
     assert forecast_service.calls == []
 
 
@@ -2435,7 +2435,7 @@ async def test_forecast_cloudflare_blocked_is_reported_not_crashed():
 # --- gas price report freshness ---------------------------------------------
 
 
-async def _run_gas_filter_call(gasbuddy, args, message="gas stations near me"):
+async def _run_gas_filter_call(gas_price, args, message="gas stations near me"):
     fake_post = AsyncMock(
         side_effect=[
             _function_call_response("find_nearby_gas_stations", args),
@@ -2443,9 +2443,9 @@ async def _run_gas_filter_call(gasbuddy, args, message="gas stations near me"):
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post), patch(
-        "app.services.gemini_client.asyncio.sleep", new=AsyncMock()
+        "app.services.chat_agent_client.asyncio.sleep", new=AsyncMock()
     ):
-        await _configured_service(gasbuddy).send(
+        await _configured_service(gas_price).send(
             [ChatMessage(role="user", content=message)],
             gas_location=(1.0, 2.0),
         )
@@ -2458,21 +2458,21 @@ async def _run_gas_filter_call(gasbuddy, args, message="gas stations near me"):
 
 def test_minutes_since_computes_whole_minutes_for_a_known_offset():
     timestamp = _iso_minutes_ago(12)
-    assert gemini_client._minutes_since(timestamp) == 12
+    assert chat_agent_client._minutes_since(timestamp) == 12
 
 
 def test_minutes_since_returns_none_for_missing_or_bad_input():
-    assert gemini_client._minutes_since(None) is None
-    assert gemini_client._minutes_since("not a timestamp") is None
+    assert chat_agent_client._minutes_since(None) is None
+    assert chat_agent_client._minutes_since("not a timestamp") is None
 
 
 def test_format_minutes_ago_buckets():
-    assert gemini_client._format_minutes_ago(0) == "just now"
-    assert gemini_client._format_minutes_ago(1) == "1 minute ago"
-    assert gemini_client._format_minutes_ago(12) == "12 minutes ago"
-    assert gemini_client._format_minutes_ago(60) == "1 hour ago"
-    assert gemini_client._format_minutes_ago(150) == "2 hours ago"
-    assert gemini_client._format_minutes_ago(60 * 24 * 2) == "2 days ago"
+    assert chat_agent_client._format_minutes_ago(0) == "just now"
+    assert chat_agent_client._format_minutes_ago(1) == "1 minute ago"
+    assert chat_agent_client._format_minutes_ago(12) == "12 minutes ago"
+    assert chat_agent_client._format_minutes_ago(60) == "1 hour ago"
+    assert chat_agent_client._format_minutes_ago(150) == "2 hours ago"
+    assert chat_agent_client._format_minutes_ago(60 * 24 * 2) == "2 days ago"
 
 
 def test_station_summary_includes_report_age_per_grade():
@@ -2480,7 +2480,7 @@ def test_station_summary_includes_report_age_per_grade():
         regular_reported_minutes_ago=5, premium=189.9, premium_reported_minutes_ago=200
     )
 
-    summary = gemini_client._station_summary(station)
+    summary = chat_agent_client._station_summary(station)
 
     assert summary["regular_reported_minutes_ago"] == 5
     assert summary["regular_reported"] == "5 minutes ago"
@@ -2493,13 +2493,13 @@ def test_station_summary_includes_report_age_per_grade():
 
 @pytest.mark.asyncio
 async def test_max_report_age_minutes_filters_out_stale_prices():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _make_station("Fresh", regular_reported_minutes_ago=10),
             _make_station("Stale", regular_reported_minutes_ago=120),
         ]
     )
-    payload = await _run_gas_filter_call(gasbuddy, {"max_report_age_minutes": 30})
+    payload = await _run_gas_filter_call(gas_price, {"max_report_age_minutes": 30})
 
     assert [s["name"] for s in payload["stations"]] == ["Fresh"]
     assert payload["filters_applied"]["max_report_age_minutes"] == 30.0
@@ -2507,14 +2507,14 @@ async def test_max_report_age_minutes_filters_out_stale_prices():
 
 @pytest.mark.asyncio
 async def test_max_report_age_minutes_combined_with_fuel_grade_finds_cheapest_among_fresh():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _make_station("Cheap but stale", price=140.0, regular_reported_minutes_ago=120),
             _make_station("Pricier but fresh", price=160.0, regular_reported_minutes_ago=5),
         ]
     )
     payload = await _run_gas_filter_call(
-        gasbuddy, {"fuel_grade": "regular", "max_report_age_minutes": 30}
+        gas_price, {"fuel_grade": "regular", "max_report_age_minutes": 30}
     )
 
     assert payload["cheapest"]["name"] == "Pricier but fresh"
@@ -2523,10 +2523,10 @@ async def test_max_report_age_minutes_combined_with_fuel_grade_finds_cheapest_am
 
 @pytest.mark.asyncio
 async def test_max_report_age_minutes_reports_a_clear_message_when_nothing_is_fresh_enough():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[_make_station("Stale", regular_reported_minutes_ago=120)]
     )
-    payload = await _run_gas_filter_call(gasbuddy, {"max_report_age_minutes": 30})
+    payload = await _run_gas_filter_call(gas_price, {"max_report_age_minutes": 30})
 
     assert "error" in payload
     assert "30" in payload["error"]
@@ -2534,14 +2534,14 @@ async def test_max_report_age_minutes_reports_a_clear_message_when_nothing_is_fr
 
 @pytest.mark.asyncio
 async def test_sort_by_recency_orders_freshest_first_and_sets_most_recent():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _make_station("Oldest", regular_reported_minutes_ago=180),
             _make_station("Freshest", regular_reported_minutes_ago=2),
             _make_station("Middle", regular_reported_minutes_ago=45),
         ]
     )
-    payload = await _run_gas_filter_call(gasbuddy, {"sort_by_recency": True})
+    payload = await _run_gas_filter_call(gas_price, {"sort_by_recency": True})
 
     assert [s["name"] for s in payload["stations"]] == ["Freshest", "Middle", "Oldest"]
     assert payload["most_recent"]["name"] == "Freshest"
@@ -2550,27 +2550,27 @@ async def test_sort_by_recency_orders_freshest_first_and_sets_most_recent():
 
 @pytest.mark.asyncio
 async def test_sort_by_recency_drops_stations_with_no_report_time():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _make_station("Has timestamp", regular_reported_minutes_ago=10),
             _make_station("No timestamp"),
         ]
     )
-    payload = await _run_gas_filter_call(gasbuddy, {"sort_by_recency": True})
+    payload = await _run_gas_filter_call(gas_price, {"sort_by_recency": True})
 
     assert [s["name"] for s in payload["stations"]] == ["Has timestamp"]
 
 
 @pytest.mark.asyncio
 async def test_sort_by_recency_combined_with_fuel_grade_can_surface_different_stations():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _make_station("Cheap and stale", price=140.0, regular_reported_minutes_ago=180),
             _make_station("Pricey but fresh", price=170.0, regular_reported_minutes_ago=2),
         ]
     )
     payload = await _run_gas_filter_call(
-        gasbuddy, {"fuel_grade": "regular", "sort_by_recency": True}
+        gas_price, {"fuel_grade": "regular", "sort_by_recency": True}
     )
 
     # cheapest still answers "cheapest", most_recent still answers
@@ -2584,14 +2584,14 @@ async def test_sort_by_recency_combined_with_fuel_grade_can_surface_different_st
 
 @pytest.mark.asyncio
 async def test_sort_by_distance_orders_nearest_first_and_sets_nearest():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _make_station("Far", distance_miles=5.0),
             _make_station("Near", distance_miles=0.3),
             _make_station("Mid", distance_miles=2.0),
         ]
     )
-    payload = await _run_gas_filter_call(gasbuddy, {"sort_by_distance": True})
+    payload = await _run_gas_filter_call(gas_price, {"sort_by_distance": True})
 
     assert [s["name"] for s in payload["stations"]] == ["Near", "Mid", "Far"]
     assert payload["nearest"]["name"] == "Near"
@@ -2600,14 +2600,14 @@ async def test_sort_by_distance_orders_nearest_first_and_sets_nearest():
 
 @pytest.mark.asyncio
 async def test_sort_by_distance_and_fuel_grade_together_can_surface_different_stations():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _make_station("Near but pricey", distance_miles=0.3, price=170.0),
             _make_station("Far but cheap", distance_miles=5.0, price=140.0),
         ]
     )
     payload = await _run_gas_filter_call(
-        gasbuddy, {"fuel_grade": "regular", "sort_by_distance": True}
+        gas_price, {"fuel_grade": "regular", "sort_by_distance": True}
     )
 
     # nearest still answers "closest", cheapest still answers "cheapest"
@@ -2621,14 +2621,14 @@ async def test_sort_by_distance_and_fuel_grade_together_can_surface_different_st
 
 @pytest.mark.asyncio
 async def test_gas_top_n_is_echoed_in_filters_applied():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _make_station("Cheapest", price=140.0),
             _make_station("Mid", price=160.0),
         ]
     )
     payload = await _run_gas_filter_call(
-        gasbuddy, {"fuel_grade": "regular", "top_n": 2}
+        gas_price, {"fuel_grade": "regular", "top_n": 2}
     )
 
     assert payload["filters_applied"]["top_n"] == 2
@@ -2636,7 +2636,7 @@ async def test_gas_top_n_is_echoed_in_filters_applied():
 
 @pytest.mark.asyncio
 async def test_gas_top_n_larger_than_available_stations_cards_all_of_them():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _make_station("Near", distance_miles=0.3),
             _make_station("Far", distance_miles=5.0),
@@ -2651,7 +2651,7 @@ async def test_gas_top_n_larger_than_available_stations_cards_all_of_them():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        reply = await _configured_service(gasbuddy).send(
+        reply = await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="nearest gas stations to me?")],
             gas_location=(1.0, 2.0),
         )
@@ -2664,7 +2664,7 @@ async def test_gas_top_n_larger_than_available_stations_cards_all_of_them():
 
 @pytest.mark.asyncio
 async def test_gas_station_search_populates_chatturnresult_gas_stations():
-    gasbuddy = FakeGasBuddyService(stations=[_make_station("Shell"), _make_station("Esso")])
+    gas_price = FakeGasPriceService(stations=[_make_station("Shell"), _make_station("Esso")])
     fake_post = AsyncMock(
         side_effect=[
             _function_call_response("find_nearby_gas_stations", {}),
@@ -2672,7 +2672,7 @@ async def test_gas_station_search_populates_chatturnresult_gas_stations():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        reply = await _configured_service(gasbuddy).send(
+        reply = await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="gas near me?")],
             gas_location=(1.0, 2.0),
         )
@@ -2702,7 +2702,7 @@ async def test_ev_charger_search_populates_chatturnresult_ev_stations():
 
 @pytest.mark.asyncio
 async def test_combined_search_populates_both_chatturnresult_station_lists():
-    gasbuddy = FakeGasBuddyService(stations=[_gas_station_at("Shell", 43.0, -80.0)])
+    gas_price = FakeGasPriceService(stations=[_gas_station_at("Shell", 43.0, -80.0)])
     ev_search = FakeEvSearchService(stations=[_ev_station_at("ChargePoint", 43.0, -80.0)])
     fake_post = AsyncMock(
         side_effect=[
@@ -2711,7 +2711,7 @@ async def test_combined_search_populates_both_chatturnresult_station_lists():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        reply = await _configured_service(gasbuddy=gasbuddy, ev_search=ev_search).send(
+        reply = await _configured_service(gas_price=gas_price, ev_search=ev_search).send(
             [ChatMessage(role="user", content="gas and ev near me?")],
             gas_location=(1.0, 2.0),
             ev_location=(1.0, 2.0),
@@ -2762,7 +2762,7 @@ async def test_forecast_only_turn_returns_no_stations():
 
 @pytest.mark.asyncio
 async def test_a_station_found_by_two_tool_calls_in_one_turn_is_not_duplicated():
-    gasbuddy = FakeGasBuddyService(stations=[_make_station("Shell")])
+    gas_price = FakeGasPriceService(stations=[_make_station("Shell")])
     fake_post = AsyncMock(
         side_effect=[
             _function_call_response("find_nearby_gas_stations", {"brands": ["Shell"]}),
@@ -2771,7 +2771,7 @@ async def test_a_station_found_by_two_tool_calls_in_one_turn_is_not_duplicated()
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        reply = await _configured_service(gasbuddy).send(
+        reply = await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="compare Shell to Shell?")],
             gas_location=(1.0, 2.0),
         )
@@ -2803,7 +2803,7 @@ async def test_error_tool_response_contributes_no_stations():
 
 @pytest.mark.asyncio
 async def test_cheapest_query_only_cards_the_cheapest_station_not_every_match():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _make_station("Cheap", price=150.0),
             _make_station("Mid", price=160.0),
@@ -2817,7 +2817,7 @@ async def test_cheapest_query_only_cards_the_cheapest_station_not_every_match():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        reply = await _configured_service(gasbuddy).send(
+        reply = await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="cheapest gas near me?")],
             gas_location=(1.0, 2.0),
         )
@@ -2827,7 +2827,7 @@ async def test_cheapest_query_only_cards_the_cheapest_station_not_every_match():
 
 @pytest.mark.asyncio
 async def test_recency_query_only_cards_the_freshest_station():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _make_station("Stale", regular_reported_minutes_ago=180),
             _make_station("Fresh", regular_reported_minutes_ago=2),
@@ -2840,7 +2840,7 @@ async def test_recency_query_only_cards_the_freshest_station():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        reply = await _configured_service(gasbuddy).send(
+        reply = await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="most recently updated gas price?")],
             gas_location=(1.0, 2.0),
         )
@@ -2850,7 +2850,7 @@ async def test_recency_query_only_cards_the_freshest_station():
 
 @pytest.mark.asyncio
 async def test_cheapest_and_recency_together_can_card_two_distinct_stations():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _make_station("Cheap and stale", price=140.0, regular_reported_minutes_ago=180),
             _make_station("Pricey but fresh", price=170.0, regular_reported_minutes_ago=2),
@@ -2866,7 +2866,7 @@ async def test_cheapest_and_recency_together_can_card_two_distinct_stations():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        reply = await _configured_service(gasbuddy).send(
+        reply = await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="cheapest and freshest gas near me?")],
             gas_location=(1.0, 2.0),
         )
@@ -2876,7 +2876,7 @@ async def test_cheapest_and_recency_together_can_card_two_distinct_stations():
 
 @pytest.mark.asyncio
 async def test_closest_gas_station_query_only_cards_the_nearest_station_not_every_match():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _make_station("Near", distance_miles=0.3),
             _make_station("Mid", distance_miles=2.0),
@@ -2890,7 +2890,7 @@ async def test_closest_gas_station_query_only_cards_the_nearest_station_not_ever
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        reply = await _configured_service(gasbuddy).send(
+        reply = await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="What is the closest gas station to me?")],
             gas_location=(1.0, 2.0),
         )
@@ -2900,7 +2900,7 @@ async def test_closest_gas_station_query_only_cards_the_nearest_station_not_ever
 
 @pytest.mark.asyncio
 async def test_top_n_gas_query_cards_the_requested_count_not_just_one():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _make_station("Priciest", price=180.0),
             _make_station("Cheapest", price=140.0),
@@ -2917,7 +2917,7 @@ async def test_top_n_gas_query_cards_the_requested_count_not_just_one():
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        reply = await _configured_service(gasbuddy).send(
+        reply = await _configured_service(gas_price).send(
             [ChatMessage(role="user", content="What are the 3 cheapest gas stations near me?")],
             gas_location=(1.0, 2.0),
         )
@@ -2986,7 +2986,7 @@ async def test_ev_ranking_query_only_cards_the_top_match_not_every_match():
 
 @pytest.mark.asyncio
 async def test_closest_pair_query_only_cards_the_pair_not_every_nearby_station():
-    gasbuddy = FakeGasBuddyService(
+    gas_price = FakeGasPriceService(
         stations=[
             _gas_station_at("Near Gas", 43.0, -80.0),
             _gas_station_at("Far Gas", 50.0, -80.0),
@@ -3005,7 +3005,7 @@ async def test_closest_pair_query_only_cards_the_pair_not_every_nearby_station()
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
-        reply = await _configured_service(gasbuddy=gasbuddy, ev_search=ev_search).send(
+        reply = await _configured_service(gas_price=gas_price, ev_search=ev_search).send(
             [
                 ChatMessage(
                     role="user",

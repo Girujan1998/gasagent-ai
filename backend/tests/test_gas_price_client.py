@@ -1,11 +1,11 @@
 from unittest.mock import patch
 
 from app.config import Settings
-from app.services.gasbuddy_client import (
-    GasBuddyService,
+from app.services.gas_price_client import (
+    GasPriceService,
     _select_brands,
     _to_gas_station,
-    get_gasbuddy_service,
+    get_gas_price_service,
 )
 
 
@@ -52,7 +52,7 @@ def test_select_brands_handles_no_brands():
 
 
 def test_select_brands_ignores_a_duplicate_of_the_primary_brand():
-    # GasBuddy sometimes lists the same brand twice for one station
+    # The underlying lookup sometimes lists the same brand twice for one station
     # (identical name/logo) rather than a genuine second brand.
     brands = [
         {"name": "Esso", "brandingType": "cstore", "imageUrl": "esso.png"},
@@ -108,7 +108,7 @@ def test_to_gas_station_maps_connected_brand():
 
 
 def test_to_gas_station_has_no_connected_brand_when_brands_list_duplicates_primary():
-    # Matches a real GasBuddy response for 684 Hespeler Rd, Cambridge, ON —
+    # Matches a real response for 684 Hespeler Rd, Cambridge, ON —
     # `brands` lists "Esso" twice instead of a genuine second brand.
     raw = {
         "station_id": "11983",
@@ -164,88 +164,88 @@ def test_to_gas_station_has_no_amenities_when_missing():
     assert station.amenities == []
 
 
-# --- solver_url wiring (FlareSolverr, for Cloudflare-blocked deploys) ------
+# --- solver_url wiring (anti-bot solver, for blocked deploys) ------
 
 
-def test_gasbuddy_service_passes_solver_url_to_the_underlying_client():
-    with patch("app.services.gasbuddy_client.GasBuddy") as fake_gasbuddy:
-        GasBuddyService(solver_url="http://127.0.0.1:8191/v1")
+def test_gas_price_service_passes_solver_url_to_the_underlying_client():
+    with patch("app.services.gas_price_client.GasBuddy") as fake_gas_client:
+        GasPriceService(solver_url="http://127.0.0.1:8191/v1")
 
-    fake_gasbuddy.assert_called_once_with(
+    fake_gas_client.assert_called_once_with(
         solver_url="http://127.0.0.1:8191/v1", timeout=60000
     )
 
 
-def test_gasbuddy_service_defaults_to_no_solver_url():
-    with patch("app.services.gasbuddy_client.GasBuddy") as fake_gasbuddy:
-        GasBuddyService()
+def test_gas_price_service_defaults_to_no_solver_url():
+    with patch("app.services.gas_price_client.GasBuddy") as fake_gas_client:
+        GasPriceService()
 
-    fake_gasbuddy.assert_called_once_with(solver_url=None, timeout=60000)
-
-
-def test_gasbuddy_service_passes_timeout_ms_to_the_underlying_client():
-    # Confirmed live that a harder/slower Cloudflare challenge can need
-    # more than py-gasbuddy's own 60s default to solve — this is what
-    # lets that be raised without patching the library itself.
-    with patch("app.services.gasbuddy_client.GasBuddy") as fake_gasbuddy:
-        GasBuddyService(timeout_ms=120000)
-
-    fake_gasbuddy.assert_called_once_with(solver_url=None, timeout=120000)
+    fake_gas_client.assert_called_once_with(solver_url=None, timeout=60000)
 
 
-def test_get_gasbuddy_service_reads_solver_url_from_settings():
-    # get_gasbuddy_service is @lru_cache'd (see its own docstring for why
+def test_gas_price_service_passes_timeout_ms_to_the_underlying_client():
+    # Confirmed live that a harder/slower anti-bot challenge can need
+    # more than the underlying client's own 60s default to solve — this
+    # is what lets that be raised without patching the library itself.
+    with patch("app.services.gas_price_client.GasBuddy") as fake_gas_client:
+        GasPriceService(timeout_ms=120000)
+
+    fake_gas_client.assert_called_once_with(solver_url=None, timeout=120000)
+
+
+def test_get_gas_price_service_reads_solver_url_from_settings():
+    # get_gas_price_service is @lru_cache'd (see its own docstring for why
     # — a real singleton, not just cheap-to-construct) — cleared here so
     # this test observes a fresh construction rather than a cached
     # instance left over from another test.
-    get_gasbuddy_service.cache_clear()
+    get_gas_price_service.cache_clear()
     settings = Settings(gasbuddy_solver_url="http://127.0.0.1:8191/v1")
     with (
-        patch("app.services.gasbuddy_client.get_settings", return_value=settings),
-        patch("app.services.gasbuddy_client.GasBuddy") as fake_gasbuddy,
+        patch("app.services.gas_price_client.get_settings", return_value=settings),
+        patch("app.services.gas_price_client.GasBuddy") as fake_gas_client,
     ):
-        get_gasbuddy_service()
+        get_gas_price_service()
 
-    fake_gasbuddy.assert_called_once_with(
+    fake_gas_client.assert_called_once_with(
         solver_url="http://127.0.0.1:8191/v1", timeout=120000
     )
-    get_gasbuddy_service.cache_clear()
+    get_gas_price_service.cache_clear()
 
 
-def test_get_gasbuddy_service_defaults_to_no_solver_url_when_unset():
-    get_gasbuddy_service.cache_clear()
+def test_get_gas_price_service_defaults_to_no_solver_url_when_unset():
+    get_gas_price_service.cache_clear()
     settings = Settings(gasbuddy_solver_url="")
     with (
-        patch("app.services.gasbuddy_client.get_settings", return_value=settings),
-        patch("app.services.gasbuddy_client.GasBuddy") as fake_gasbuddy,
+        patch("app.services.gas_price_client.get_settings", return_value=settings),
+        patch("app.services.gas_price_client.GasBuddy") as fake_gas_client,
     ):
-        get_gasbuddy_service()
+        get_gas_price_service()
 
-    fake_gasbuddy.assert_called_once_with(solver_url=None, timeout=120000)
-    get_gasbuddy_service.cache_clear()
+    fake_gas_client.assert_called_once_with(solver_url=None, timeout=120000)
+    get_gas_price_service.cache_clear()
 
 
-def test_get_gasbuddy_service_reads_timeout_ms_from_settings():
-    get_gasbuddy_service.cache_clear()
+def test_get_gas_price_service_reads_timeout_ms_from_settings():
+    get_gas_price_service.cache_clear()
     settings = Settings(gasbuddy_timeout_ms=180000)
     try:
         with (
-            patch("app.services.gasbuddy_client.get_settings", return_value=settings),
-            patch("app.services.gasbuddy_client.GasBuddy") as fake_gasbuddy,
+            patch("app.services.gas_price_client.get_settings", return_value=settings),
+            patch("app.services.gas_price_client.GasBuddy") as fake_gas_client,
         ):
-            get_gasbuddy_service()
+            get_gas_price_service()
 
-        fake_gasbuddy.assert_called_once_with(solver_url=None, timeout=180000)
+        fake_gas_client.assert_called_once_with(solver_url=None, timeout=180000)
     finally:
-        get_gasbuddy_service.cache_clear()
+        get_gas_price_service.cache_clear()
 
 
-def test_get_gasbuddy_service_returns_the_same_instance_across_calls():
+def test_get_gas_price_service_returns_the_same_instance_across_calls():
     # The actual point of @lru_cache here — concurrent requests must
-    # share one GasBuddy client so its token-refresh lock and cached
-    # token actually apply across requests, not just within one.
-    get_gasbuddy_service.cache_clear()
+    # share one client so its token-refresh lock and cached token
+    # actually apply across requests, not just within one.
+    get_gas_price_service.cache_clear()
     try:
-        assert get_gasbuddy_service() is get_gasbuddy_service()
+        assert get_gas_price_service() is get_gas_price_service()
     finally:
-        get_gasbuddy_service.cache_clear()
+        get_gas_price_service.cache_clear()

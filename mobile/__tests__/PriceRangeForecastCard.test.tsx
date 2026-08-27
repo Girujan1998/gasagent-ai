@@ -24,7 +24,7 @@ function makeForecast(
     price_change_formatted: '+1.2¢',
     trend_direction: 'up',
     daily_change_pct: 0.0023,
-    source: 'statcan',
+    source: 'ca',
     source_period_end: '2026-07-01',
     stations_sampled: 8,
     today_lowest_price: 158.9,

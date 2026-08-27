@@ -1,8 +1,8 @@
 import {EvConnectorDetail, EvStation} from '../api/client';
 
-// AFDC's own connector codes, mapped to the names drivers actually
-// recognize. Anything not in this table (a code AFDC adds later, or an
-// unusual one) is passed through as-is rather than hidden.
+// The directory source's own connector codes, mapped to the names drivers
+// actually recognize. Anything not in this table (a code added later, or
+// an unusual one) is passed through as-is rather than hidden.
 const CONNECTOR_LABELS: Record<string, string> = {
   J1772: 'J1772',
   CHADEMO: 'CHAdeMO',
@@ -15,7 +15,8 @@ export function formatConnectorType(type: string): string {
   return CONNECTOR_LABELS[type.toUpperCase()] ?? type;
 }
 
-// AFDC has no brand_logo_url field the way GasBuddy does — network_web (the
+// The directory source has no brand_logo_url field the way the gas-price
+// lookup does — network_web (the
 // operator's own site, e.g. "https://www.chargepoint.com") is the only
 // thing identifying which network a station belongs to, so the logo is
 // derived from that site's own favicon rather than a maintained lookup
@@ -33,10 +34,11 @@ export function networkLogoUrl(networkWeb: string | null): string | null {
   )}`;
 }
 
-// OCM-only — AFDC has no per-connector power/voltage/amperage data at all,
-// so this returns null for any AFDC-sourced connector. Only the specs that
-// are actually reported are included, in the order a driver would care
-// about them (how fast, then the electrical detail behind that).
+// Community-source-only — the directory source has no per-connector
+// power/voltage/amperage data at all, so this returns null for any
+// directory-sourced connector. Only the specs that are actually reported
+// are included, in the order a driver would care about them (how fast,
+// then the electrical detail behind that).
 export function formatConnectorSpecs(detail: EvConnectorDetail): string | null {
   const parts: string[] = [];
   if (detail.power_kw != null) {

@@ -25,8 +25,9 @@ const WELL_KNOWN_BRANDS = [
   'Pioneer',
 ];
 
-// Hyphen vs. space is the only variation seen in practice (e.g. GasBuddy
-// sometimes returns "Petro Canada" instead of "Petro-Canada") — normalize
+// Hyphen vs. space is the only variation seen in practice (e.g. the
+// gas-price lookup sometimes returns "Petro Canada" instead of
+// "Petro-Canada") — normalize
 // both sides of the comparison so those collapse into one filter option
 // instead of two.
 function normalizeBrandName(name: string): string {

@@ -30,7 +30,8 @@ function escapeHtml(text: string): string {
 
 // Stations without coordinates can't be placed on the map, so they're
 // silently dropped here rather than shown in the list — mirrors
-// stationMapHtml.ts's own handling of the same gap in GasBuddy's data.
+// stationMapHtml.ts's own handling of the same gap in the gas-price
+// lookup's data.
 export function buildEvStationMapData(
   stations: EvStation[],
   center: EvMapCenter | null,

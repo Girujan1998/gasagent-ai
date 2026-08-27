@@ -35,7 +35,7 @@ function forecastResponse(overrides: Record<string, unknown> = {}) {
         price_change_formatted: '+1.2¢',
         trend_direction: 'up',
         daily_change_pct: 0.0023,
-        source: 'statcan',
+        source: 'ca',
         source_period_end: '2026-07-01',
         stations_sampled: 8,
         today_lowest_price: 158.9,
@@ -250,7 +250,7 @@ it('shows an error message when the forecast request fails', async () => {
     Promise.resolve({
       ok: false,
       status: 502,
-      json: () => Promise.resolve({detail: 'GasBuddy lookup failed'}),
+      json: () => Promise.resolve({detail: 'Gas price lookup failed'}),
     }),
   ) as unknown as typeof fetch;
 
@@ -266,7 +266,7 @@ it('shows an error message when the forecast request fails', async () => {
     );
   });
 
-  expect(texts(renderer!).join(' ')).toContain('GasBuddy lookup failed');
+  expect(texts(renderer!).join(' ')).toContain('Gas price lookup failed');
 });
 
 it('refetches when the search location changes', async () => {
@@ -401,7 +401,7 @@ it('keeps showing the existing forecast, uninterrupted, when a pull-to-refresh f
     Promise.resolve({
       ok: false,
       status: 502,
-      json: () => Promise.resolve({detail: 'GasBuddy lookup failed'}),
+      json: () => Promise.resolve({detail: 'Gas price lookup failed'}),
     }),
   );
 
@@ -412,5 +412,5 @@ it('keeps showing the existing forecast, uninterrupted, when a pull-to-refresh f
   });
 
   expect(texts(renderer!)).toContain('168.9¢');
-  expect(texts(renderer!).join(' ')).not.toContain('GasBuddy lookup failed');
+  expect(texts(renderer!).join(' ')).not.toContain('Gas price lookup failed');
 });

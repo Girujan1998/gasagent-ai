@@ -35,7 +35,7 @@ const INITIAL_EV_FILTER_SELECTION: EvFilterSelection = {
   chargerLevelKeys: null,
 };
 
-// AFDC has no cursor-based pagination — `limit` is the total nearest
+// The EV directory source has no cursor-based pagination — `limit` is the total nearest
 // stations to return, already sorted by distance. "Load More" re-requests
 // the same location with a bigger limit and replaces the results, rather
 // than appending a page (see EV_STATIONS_PER_PAGE usage below).
@@ -46,9 +46,9 @@ const EV_STATIONS_PER_PAGE = 20;
 // nearest-N results, so a sparse suburb doesn't leave the map nearly empty
 // just because List view's page size ran out of nearby stations.
 const MAP_SEARCH_RADIUS_KM = 30;
-// NREL's own hard ceiling (see afdc_client.MAX_LIMIT) — there's no further
-// pagination beyond this on their end, so this is "no cap of our own"
-// rather than an arbitrary number.
+// The directory source's own hard ceiling (see ev_directory_client.MAX_LIMIT) —
+// there's no further pagination beyond this on their end, so this is "no cap
+// of our own" rather than an arbitrary number.
 const MAP_RESULTS_LIMIT = 200;
 
 // The part of a search worth surviving a tab switch: the location searched

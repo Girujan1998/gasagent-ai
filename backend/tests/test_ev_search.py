@@ -1,9 +1,9 @@
 import pytest
 
 from app.models.schemas import EvConnectorDetail, EvStation, EvStationComment
-from app.services.afdc_client import AfdcError
+from app.services.ev_directory_client import EvDirectoryError
 from app.services.ev_search import EvSearchService
-from app.services.ocm_client import OcmError
+from app.services.ev_community_client import EvCommunityError
 
 
 def make_ev_station(station_id: str, lat: float, lon: float, **overrides) -> EvStation:
@@ -30,7 +30,7 @@ def make_ev_station(station_id: str, lat: float, lon: float, **overrides) -> EvS
     return EvStation(**defaults)
 
 
-class FakeAfdcService:
+class FakeEvDirectoryService:
     def __init__(self, stations, total_results=None, error=None):
         self._stations = stations
         self._total_results = (
@@ -41,7 +41,7 @@ class FakeAfdcService:
     async def search_nearest_ev_stations(self, **kwargs):
         if self._error:
             raise self._error
-        from app.services.afdc_client import EvStationSearchResult
+        from app.services.ev_directory_client import EvStationSearchResult
 
         return EvStationSearchResult(
             stations=self._stations,
@@ -51,7 +51,7 @@ class FakeAfdcService:
         )
 
 
-class FakeOcmService:
+class FakeEvCommunityService:
     def __init__(self, stations=None, error=None):
         self._stations = stations or []
         self._error = error
@@ -65,45 +65,46 @@ class FakeOcmService:
 
 
 @pytest.mark.asyncio
-async def test_adds_an_ocm_station_that_afdc_does_not_have():
-    afdc = FakeAfdcService([make_ev_station("afdc-1", 41.85, -87.65)])
-    # Far enough from the AFDC station to not be a duplicate.
-    ocm = FakeOcmService([make_ev_station("ocm-1", 41.95, -87.55)])
+async def test_adds_a_community_station_that_the_directory_does_not_have():
+    directory = FakeEvDirectoryService([make_ev_station("directory-1", 41.85, -87.65)])
+    # Far enough from the directory station to not be a duplicate.
+    community = FakeEvCommunityService([make_ev_station("community-1", 41.95, -87.55)])
 
-    result = await EvSearchService(afdc, ocm).search_nearest_ev_stations(
+    result = await EvSearchService(directory, community).search_nearest_ev_stations(
         lat=41.85, lon=-87.65
     )
 
-    assert {s.station_id for s in result.stations} == {"afdc-1", "ocm-1"}
+    assert {s.station_id for s in result.stations} == {"directory-1", "community-1"}
     assert result.total_results == 2
 
 
 @pytest.mark.asyncio
-async def test_drops_an_ocm_station_that_is_essentially_the_same_physical_charger():
-    afdc = FakeAfdcService([make_ev_station("afdc-1", 41.85, -87.65)])
+async def test_drops_a_community_station_that_is_essentially_the_same_physical_charger():
+    directory = FakeEvDirectoryService([make_ev_station("directory-1", 41.85, -87.65)])
     # ~15m away — well within the "same charger" threshold.
-    ocm = FakeOcmService([make_ev_station("ocm-1", 41.85005, -87.65005)])
+    community = FakeEvCommunityService([make_ev_station("community-1", 41.85005, -87.65005)])
 
-    result = await EvSearchService(afdc, ocm).search_nearest_ev_stations(
+    result = await EvSearchService(directory, community).search_nearest_ev_stations(
         lat=41.85, lon=-87.65
     )
 
-    assert [s.station_id for s in result.stations] == ["afdc-1"]
+    assert [s.station_id for s in result.stations] == ["directory-1"]
     assert result.total_results == 1
 
 
 @pytest.mark.asyncio
-async def test_enriches_the_kept_afdc_station_with_a_duplicates_ocm_data_instead_of_discarding_it():
-    # AFDC alone has neither of these; OCM's copy (dropped as a duplicate
-    # of the AFDC station kept in its place) is where they come from — this
-    # is what makes comments/photos show up for the large majority of
-    # stations, since most physical chargers exist in both sources.
-    afdc = FakeAfdcService([make_ev_station("afdc-1", 41.85, -87.65)])
-    ocm = FakeOcmService(
+async def test_enriches_the_kept_directory_station_with_a_duplicates_community_data_instead_of_discarding_it():
+    # The directory source alone has neither of these; the community
+    # source's copy (dropped as a duplicate of the directory station kept
+    # in its place) is where they come from — this is what makes
+    # comments/photos show up for the large majority of stations, since
+    # most physical chargers exist in both sources.
+    directory = FakeEvDirectoryService([make_ev_station("directory-1", 41.85, -87.65)])
+    community = FakeEvCommunityService(
         [
             make_ev_station(
-                "ocm-1",
-                41.85005,  # ~15m away — a duplicate of afdc-1
+                "community-1",
+                41.85005,  # ~15m away — a duplicate of directory-1
                 -87.65005,
                 comments=[
                     EvStationComment(author="Driver", text="Works great.")
@@ -118,11 +119,11 @@ async def test_enriches_the_kept_afdc_station_with_a_duplicates_ocm_data_instead
         ]
     )
 
-    result = await EvSearchService(afdc, ocm).search_nearest_ev_stations(
+    result = await EvSearchService(directory, community).search_nearest_ev_stations(
         lat=41.85, lon=-87.65
     )
 
-    assert [s.station_id for s in result.stations] == ["afdc-1"]
+    assert [s.station_id for s in result.stations] == ["directory-1"]
     station = result.stations[0]
     assert station.comments == [EvStationComment(author="Driver", text="Works great.")]
     assert station.photo_urls == ["https://example.com/photo.jpg"]
@@ -132,15 +133,15 @@ async def test_enriches_the_kept_afdc_station_with_a_duplicates_ocm_data_instead
 
 
 @pytest.mark.asyncio
-async def test_recomputes_the_ocm_stations_distance_from_the_real_search_point():
-    afdc = FakeAfdcService([])
-    # The OCM station's own (cached, possibly stale) distance_miles is
-    # deliberately wrong here — it must be ignored and recalculated.
-    ocm = FakeOcmService(
-        [make_ev_station("ocm-1", 41.90, -87.60, distance_miles=999)]
+async def test_recomputes_the_community_stations_distance_from_the_real_search_point():
+    directory = FakeEvDirectoryService([])
+    # The community station's own (cached, possibly stale) distance_miles
+    # is deliberately wrong here — it must be ignored and recalculated.
+    community = FakeEvCommunityService(
+        [make_ev_station("community-1", 41.90, -87.60, distance_miles=999)]
     )
 
-    result = await EvSearchService(afdc, ocm).search_nearest_ev_stations(
+    result = await EvSearchService(directory, community).search_nearest_ev_stations(
         lat=41.85, lon=-87.65
     )
 
@@ -150,17 +151,17 @@ async def test_recomputes_the_ocm_stations_distance_from_the_real_search_point()
 
 @pytest.mark.asyncio
 async def test_sorts_the_merged_list_by_distance_and_respects_the_limit():
-    afdc = FakeAfdcService(
+    directory = FakeEvDirectoryService(
         [
             make_ev_station("far", 42.20, -87.10, distance_miles=25),
             make_ev_station("near", 41.86, -87.64, distance_miles=1),
         ]
     )
-    ocm = FakeOcmService(
+    community = FakeEvCommunityService(
         [make_ev_station("middle", 41.95, -87.55, distance_miles=999)]
     )
 
-    result = await EvSearchService(afdc, ocm).search_nearest_ev_stations(
+    result = await EvSearchService(directory, community).search_nearest_ev_stations(
         lat=41.85, lon=-87.65, limit=2
     )
 
@@ -168,36 +169,37 @@ async def test_sorts_the_merged_list_by_distance_and_respects_the_limit():
 
 
 @pytest.mark.asyncio
-async def test_passes_the_afdc_resolved_coordinates_to_the_ocm_lookup():
-    # AFDC does the geocoding when a text query is given — OCM must reuse
-    # those resolved coordinates rather than geocoding a second time.
-    afdc = FakeAfdcService([])
-    ocm = FakeOcmService([])
+async def test_passes_the_directorys_resolved_coordinates_to_the_community_lookup():
+    # The directory source does the geocoding when a text query is
+    # given — the community source must reuse those resolved coordinates
+    # rather than geocoding a second time.
+    directory = FakeEvDirectoryService([])
+    community = FakeEvCommunityService([])
 
-    await EvSearchService(afdc, ocm).search_nearest_ev_stations(query="Chicago")
+    await EvSearchService(directory, community).search_nearest_ev_stations(query="Chicago")
 
-    assert ocm.last_call_args == (41.85, -87.65)
+    assert community.last_call_args == (41.85, -87.65)
 
 
 @pytest.mark.asyncio
-async def test_a_failed_ocm_lookup_does_not_break_the_search():
-    afdc = FakeAfdcService([make_ev_station("afdc-1", 41.85, -87.65)])
-    ocm = FakeOcmService(error=OcmError("boom"))
+async def test_a_failed_community_lookup_does_not_break_the_search():
+    directory = FakeEvDirectoryService([make_ev_station("directory-1", 41.85, -87.65)])
+    community = FakeEvCommunityService(error=EvCommunityError("boom"))
 
-    result = await EvSearchService(afdc, ocm).search_nearest_ev_stations(
+    result = await EvSearchService(directory, community).search_nearest_ev_stations(
         lat=41.85, lon=-87.65
     )
 
-    assert [s.station_id for s in result.stations] == ["afdc-1"]
+    assert [s.station_id for s in result.stations] == ["directory-1"]
     assert result.total_results == 1
 
 
 @pytest.mark.asyncio
-async def test_a_failed_afdc_lookup_still_raises():
-    afdc = FakeAfdcService([], error=AfdcError("boom"))
-    ocm = FakeOcmService([])
+async def test_a_failed_directory_lookup_still_raises():
+    directory = FakeEvDirectoryService([], error=EvDirectoryError("boom"))
+    community = FakeEvCommunityService([])
 
-    with pytest.raises(AfdcError):
-        await EvSearchService(afdc, ocm).search_nearest_ev_stations(
+    with pytest.raises(EvDirectoryError):
+        await EvSearchService(directory, community).search_nearest_ev_stations(
             lat=41.85, lon=-87.65
         )

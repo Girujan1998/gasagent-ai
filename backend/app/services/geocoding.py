@@ -4,17 +4,18 @@ from dataclasses import dataclass
 import httpx
 
 GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
-ZIPPOPOTAM_CA_URL = "https://api.zippopotam.us/CA/{fsa}"
+CA_POSTAL_CODE_LOOKUP_URL = "https://api.zippopotam.us/CA/{fsa}"
 
-# Open-Meteo's geocoding API has no server-side country filter (a
-# `countryCode`/`country_code` param is silently ignored), so autocomplete
-# results are restricted to the US and Canada here instead, after fetching.
+# The city-name geocoding API used here has no server-side country
+# filter (a `countryCode`/`country_code` param is silently ignored),
+# so autocomplete results are restricted to the US and Canada here
+# instead, after fetching.
 AUTOCOMPLETE_COUNTRY_CODES = {"US", "CA"}
 
 # Canada Post postal code format: letter-digit-letter digit-letter-digit,
 # excluding D, F, I, O, Q, U (and W, Z) from the first letter position.
 # Only the first 3 characters (the FSA, e.g. "M5V") are geocodable via the
-# free lookup below — Zippopotam doesn't resolve to full 6-character
+# free lookup below — it doesn't resolve to full 6-character
 # precision, so this is neighborhood-level, not exact-address-level.
 CA_POSTAL_CODE_PATTERN = re.compile(
     r"^([ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z])\s?\d[ABCEGHJ-NPRSTV-Z]\d$",
@@ -53,7 +54,7 @@ def _looks_like_ca_postal_code(query: str) -> bool:
 
 async def _geocode_ca_postal_code(query: str, fsa: str) -> tuple[float, float]:
     async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.get(ZIPPOPOTAM_CA_URL.format(fsa=fsa))
+        response = await client.get(CA_POSTAL_CODE_LOOKUP_URL.format(fsa=fsa))
 
     if response.status_code == 404:
         raise GeocodingError(f"No location found for postal code '{query}'.")
@@ -67,7 +68,7 @@ async def _geocode_ca_postal_code(query: str, fsa: str) -> tuple[float, float]:
     return float(place["latitude"]), float(place["longitude"])
 
 
-async def _geocode_open_meteo(query: str) -> tuple[float, float]:
+async def _geocode_by_city_name(query: str) -> tuple[float, float]:
     async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.get(
             GEOCODING_URL, params={"name": query, "count": 1}
@@ -86,22 +87,22 @@ async def _geocode_open_meteo(query: str) -> tuple[float, float]:
 async def geocode(query: str) -> tuple[float, float]:
     """Resolve a city name or postal code to (lat, lon).
 
-    py-gasbuddy's location search only accepts US zip codes or raw
-    coordinates — this fills the gap for city names, Canadian postal
-    codes, and other postal code formats.
+    The underlying gas-price lookup's own location search only accepts
+    US zip codes or raw coordinates — this fills the gap for city
+    names, Canadian postal codes, and other postal code formats.
     """
     fsa = _extract_ca_fsa(query)
     if fsa:
         return await _geocode_ca_postal_code(query, fsa)
 
-    return await _geocode_open_meteo(query)
+    return await _geocode_by_city_name(query)
 
 
 async def _autocomplete_ca_postal_code(query: str) -> list[LocationSuggestion]:
     fsa = query.strip().replace(" ", "")[:3].upper()
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(ZIPPOPOTAM_CA_URL.format(fsa=fsa))
+            response = await client.get(CA_POSTAL_CODE_LOOKUP_URL.format(fsa=fsa))
     except httpx.HTTPError:
         return []
 
@@ -139,7 +140,7 @@ async def _autocomplete_city(query: str) -> list[LocationSuggestion]:
     results = [
         r for r in results if r.get("country_code") in AUTOCOMPLETE_COUNTRY_CODES
     ]
-    # Open-Meteo's short-prefix matches skew toward tiny, obscure places —
+    # This source's short-prefix matches skew toward tiny, obscure places —
     # favor recognizable ones so a query like "Tor" surfaces Toronto over a
     # hamlet nobody's searching for.
     results.sort(key=lambda r: r.get("population") or 0, reverse=True)

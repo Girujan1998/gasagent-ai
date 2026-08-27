@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.models.schemas import ChatRequest, ChatResponse
-from app.services.gemini_client import ChatError, ChatService, get_chat_service
+from app.services.chat_agent_client import ChatError, ChatService, get_chat_service
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 

@@ -58,7 +58,7 @@ function capitalize(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-// AFDC dates are either a bare date or a full ISO timestamp — only the date
+// The directory source's dates are either a bare date or a full ISO timestamp — only the date
 // part is meaningful for "last confirmed", so the time (if present) is
 // dropped rather than shown.
 function formatConfirmedDate(date: string): string {

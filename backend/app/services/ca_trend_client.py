@@ -6,24 +6,24 @@ import httpx
 
 from app.services.national_trend import NationalTrend
 
-STATCAN_URL = (
+CA_TREND_URL = (
     "https://www150.statcan.gc.ca/t1/wds/rest/getDataFromVectorsAndLatestNPeriods"
 )
 
-# Statistics Canada table 18-10-0001-01 ("Monthly average retail prices for
-# gasoline and fuel oil, by geography"), the Canada-wide "Regular unleaded
-# gasoline at self service filling stations" series — confirmed live via
+# Table 18-10-0001-01 ("Monthly average retail prices for gasoline and fuel
+# oil, by geography"), the Canada-wide "Regular unleaded gasoline at self
+# service filling stations" series — confirmed live via
 # getSeriesInfoFromCubePidCoord for productId 18100001, coordinate
-# "20.2.0.0.0.0.0.0.0.0". Free and keyless, unlike EIA.
+# "20.2.0.0.0.0.0.0.0.0". Free and keyless, unlike the US trend source.
 GASOLINE_VECTOR_ID = 1352087861
 
-# StatCan releases this monthly, a few weeks after month-end — no reason to
-# poll more often than that.
+# This source releases the series monthly, a few weeks after month-end —
+# no reason to poll more often than that.
 CACHE_TTL_SECONDS = 3600 * 12
 
 
-class StatCanError(Exception):
-    """Raised when the Statistics Canada trend lookup fails."""
+class CaTrendError(Exception):
+    """Raised when the Canadian trend lookup fails."""
 
 
 def _parse_trend(payload: Any) -> NationalTrend | None:
@@ -51,14 +51,14 @@ def _parse_trend(payload: Any) -> NationalTrend | None:
     )
 
 
-# Module-level, not per-instance — same reasoning as ocm_client.py's cache:
-# get_statcan_service() hands out a fresh instance per request. There's
-# only one series here (a national trend, not per-location), so this is a
-# single cached value rather than a dict keyed by coordinates.
+# Module-level, not per-instance — same reasoning as ev_community_client.py's
+# cache: get_ca_trend_service() hands out a fresh instance per request.
+# There's only one series here (a national trend, not per-location), so
+# this is a single cached value rather than a dict keyed by coordinates.
 _cache: tuple[float, NationalTrend | None] | None = None
 
 
-class StatCanService:
+class CaTrendService:
     async def latest_trend(self) -> NationalTrend | None:
         """The most recent month-over-month change in Canada's average
         self-serve regular gasoline price, or None if the lookup fails."""
@@ -70,8 +70,8 @@ class StatCanService:
 
         trend = await self._fetch()
         # Only a successful fetch is cached — a transient failure (a
-        # network blip, StatCan briefly unavailable) must retry on the
-        # very next call rather than silently suppressing every
+        # network blip, the source briefly unavailable) must retry on
+        # the very next call rather than silently suppressing every
         # Canadian forecast for the full CACHE_TTL_SECONDS window.
         if trend is not None:
             _cache = (time.monotonic(), trend)
@@ -81,23 +81,23 @@ class StatCanService:
         body = [{"vectorId": GASOLINE_VECTOR_ID, "latestN": 2}]
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(STATCAN_URL, json=body)
+                response = await client.post(CA_TREND_URL, json=body)
                 response.raise_for_status()
                 payload = response.json()
         except (httpx.HTTPError, ValueError) as exc:
-            # print rather than `logging` — see gemini_client.py's own
+            # print rather than `logging` — see chat_agent_client.py's own
             # comment on why. This result gets cached for
             # CACHE_TTL_SECONDS (12h) — a transient failure here
             # otherwise silently suppresses every Canadian forecast for
             # that whole window with no visible cause.
-            print(f"[statcan] request failed: {exc!r}")
+            print(f"[ca_trend] request failed: {exc!r}")
             return None
 
         trend = _parse_trend(payload)
         if trend is None:
-            print(f"[statcan] got a response but couldn't parse a trend from it: {payload!r}")
+            print(f"[ca_trend] got a response but couldn't parse a trend from it: {payload!r}")
         return trend
 
 
-def get_statcan_service() -> StatCanService:
-    return StatCanService()
+def get_ca_trend_service() -> CaTrendService:
+    return CaTrendService()

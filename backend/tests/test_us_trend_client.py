@@ -3,15 +3,15 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from app.services import eia_client
-from app.services.eia_client import EiaService
+from app.services import us_trend_client
+from app.services.us_trend_client import UsTrendService
 
 
 @pytest.fixture(autouse=True)
 def _clear_eia_cache():
-    eia_client._cache = None
+    us_trend_client._cache = None
     yield
-    eia_client._cache = None
+    us_trend_client._cache = None
 
 
 class _FakeEiaResponse:
@@ -22,7 +22,7 @@ class _FakeEiaResponse:
     def raise_for_status(self):
         if self._status_code >= 400:
             raise httpx.HTTPStatusError(
-                "error", request=httpx.Request("GET", eia_client.EIA_URL), response=self  # type: ignore[arg-type]
+                "error", request=httpx.Request("GET", us_trend_client.US_TREND_URL), response=self  # type: ignore[arg-type]
             )
 
     def json(self):
@@ -47,7 +47,7 @@ async def test_computes_the_trend_from_the_two_latest_weekly_points():
         _payload(3.85, 3.79, "2026-08-11", "2026-08-04")
     )
     with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=fake_response)):
-        trend = await EiaService().latest_trend()
+        trend = await UsTrendService().latest_trend()
 
     assert trend is not None
     assert trend.latest_value == 3.85
@@ -63,10 +63,10 @@ async def test_sends_the_confirmed_route_and_facets():
     )
     fake_get = AsyncMock(return_value=fake_response)
     with patch("httpx.AsyncClient.get", new=fake_get):
-        await EiaService().latest_trend()
+        await UsTrendService().latest_trend()
 
     args, kwargs = fake_get.call_args
-    assert args[0] == eia_client.EIA_URL
+    assert args[0] == us_trend_client.US_TREND_URL
     params = kwargs["params"]
     assert params["facets[duoarea][]"] == "NUS"
     assert params["facets[product][]"] == "EPMR"
@@ -74,13 +74,13 @@ async def test_sends_the_confirmed_route_and_facets():
 
 
 @pytest.mark.asyncio
-async def test_returns_none_when_eia_rejects_the_request():
-    # Covers both a missing and an invalid API key — EIA responds with 403
+async def test_returns_none_when_the_source_rejects_the_request():
+    # Covers both a missing and an invalid API key — this source responds with 403
     # either way (confirmed live for the missing-key case), and both
     # should degrade to "no trend available" rather than raise.
     fake_response = _FakeEiaResponse({}, status_code=403)
     with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=fake_response)):
-        trend = await EiaService().latest_trend()
+        trend = await UsTrendService().latest_trend()
 
     assert trend is None
 
@@ -89,7 +89,7 @@ async def test_returns_none_when_eia_rejects_the_request():
 async def test_returns_none_on_a_malformed_response():
     fake_response = _FakeEiaResponse({"response": {"data": []}})
     with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=fake_response)):
-        trend = await EiaService().latest_trend()
+        trend = await UsTrendService().latest_trend()
 
     assert trend is None
 
@@ -98,7 +98,7 @@ async def test_returns_none_on_a_malformed_response():
 async def test_returns_none_when_the_request_fails():
     fake_get = AsyncMock(side_effect=httpx.ConnectError("boom"))
     with patch("httpx.AsyncClient.get", new=fake_get):
-        trend = await EiaService().latest_trend()
+        trend = await UsTrendService().latest_trend()
 
     assert trend is None
 
@@ -110,7 +110,7 @@ async def test_reuses_the_cached_trend_without_a_second_request():
     )
     fake_get = AsyncMock(return_value=fake_response)
     with patch("httpx.AsyncClient.get", new=fake_get):
-        service = EiaService()
+        service = UsTrendService()
         await service.latest_trend()
         await service.latest_trend()
 
@@ -130,7 +130,7 @@ async def test_retries_on_the_next_call_after_a_failure_instead_of_caching_it():
         ]
     )
     with patch("httpx.AsyncClient.get", new=fake_get):
-        service = EiaService()
+        service = UsTrendService()
         first = await service.latest_trend()
         second = await service.latest_trend()
 

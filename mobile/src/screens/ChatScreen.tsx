@@ -38,7 +38,7 @@ import {requestLocationPermission} from '../utils/location';
 // themselves — `messages` is exactly what gets JSON.stringify'd into the
 // next sendChatMessage request body (see handleSend below), so anything
 // placed directly on a ChatMessage would round-trip back to the backend
-// (and from there, into every future Gemini call) forever. Safe to key by
+// (and from there, into every future model call) forever. Safe to key by
 // index here since messages are only ever appended, never reordered or
 // removed.
 export type ChatCardsForMessage = {

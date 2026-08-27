@@ -90,7 +90,7 @@ function rankByPrimaryPrice(
   return ranks;
 }
 
-// Stations without coordinates (GasBuddy occasionally omits them) can't be
+// Stations without coordinates (the gas-price lookup occasionally omits them) can't be
 // placed on the map, so they're silently dropped here rather than shown in
 // the list — there's no pin position to give them.
 export function buildStationMapData(

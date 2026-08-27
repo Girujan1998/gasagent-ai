@@ -40,7 +40,7 @@ function NetworkLogo({url}: {url: string | null}): React.JSX.Element {
 function EvStationCard({station, onPress}: Props): React.JSX.Element {
   const summary = chargerCountSummary(station);
   const connectors = station.connector_types.map(formatConnectorType);
-  // OCM-only — an AFDC-sourced connector has no specs, so it's dropped here
+  // Community-source-only — a directory-sourced connector has no specs, so it's dropped here
   // rather than shown as an empty row.
   const specRows: {detail: EvConnectorDetail; specs: string}[] =
     station.connector_details.flatMap(detail => {
