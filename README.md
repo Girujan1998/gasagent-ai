@@ -19,15 +19,51 @@ rate-limited or occasionally unavailable.
   midgrade, premium, diesel), distance, and star ratings.
 - **EV charging station search** — find nearby EV charging stations, with
   network, connector types, charging speed, and distance.
-- **AI chat assistant** — a conversational agent for fuel- and EV-related
-  questions, able to pull in live station search results and price
-  forecasts as part of its answers rather than just plain text.
+- **AI chat assistant** — a tool-calling agent for fuel- and EV-related
+  questions, able to pull in live station results, price forecasts, and
+  exact fuel-cost math as part of its answers (see below).
 - **Price forecasting** — a short-term local gas price outlook, combining
   the current local average with a broader regional pricing trend.
 - **Favorites** — save stations from search results, reorder them, and
   refresh their prices later.
 - **Shared location** — sharing your location once carries across the
   app's other tabs instead of asking again in each one.
+
+## AI chat agent
+
+The chat assistant is a tool-calling agent built on top of a large-
+language-model API, not a single request/response call. On each turn,
+the model can choose to invoke one or more backend "tools" — the same
+search and forecasting logic the rest of the app uses — rather than
+guessing, read the results, and either call another tool or write a
+final reply. Rounds are capped so a conversation always ends with an
+actual answer instead of looping.
+
+It has five tools available:
+
+- **Gas station search** and **EV charging station search** — the same
+  filtering the dedicated search tabs support (brand/network allow or
+  deny lists, distance, connector type, charging power, etc.), driven
+  from a plain-language request instead of form fields.
+- **Combined gas + EV search** — for questions that need both at once,
+  including finding the closest gas station/charger *pair* to each
+  other.
+- **Fuel-cost arithmetic** — total cost for a volume, how much a budget
+  buys, or the savings from switching stations. The model is
+  deliberately never trusted to do this math itself; it's computed in
+  code and handed back as an exact number.
+- **Price forecasting** — the same next-day forecast described above,
+  so a question about tomorrow's prices gets a real number instead of
+  a guess.
+
+All filtering, sorting, and ranking happens in code — the model's job
+is deciding *which* tool(s) to call and how to phrase the answer, never
+reasoning over a raw result list itself. Replies can include live
+station results inline, rendered as the same rich cards used elsewhere
+in the app, not just prose. The agent also reuses location the same way
+the rest of the app does — from the current conversation, another
+tab's last search, or a location shared across tabs — so it doesn't
+need to ask where you are every time.
 
 ## Tech stack
 
