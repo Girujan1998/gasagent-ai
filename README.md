@@ -13,6 +13,24 @@ runs on free-tier hosting and free/public data sources, so uptime,
 accuracy, and availability aren't guaranteed, and some features may be
 rate-limited or occasionally unavailable.
 
+## Screenshots
+
+Populated with placeholder data for illustration — see the disclaimer
+above.
+
+<table>
+<tr>
+<td width="33%"><img src="screenshots/gas-search.png" alt="Gas station search results" /><br /><sub>Gas station search</sub></td>
+<td width="33%"><img src="screenshots/ev-search.png" alt="EV charging station search results" /><br /><sub>EV charging search</sub></td>
+<td width="33%"><img src="screenshots/ai-agent.png" alt="AI agent chat, chaining a station lookup into a cost calculation" /><br /><sub>AI agent (multi-step)</sub></td>
+</tr>
+<tr>
+<td width="33%"><img src="screenshots/price-forecast.png" alt="Next-day gas price forecast" /><br /><sub>Price forecast</sub></td>
+<td width="33%"><img src="screenshots/favorites.png" alt="Saved favorite stations with live distances" /><br /><sub>Favorites</sub></td>
+<td width="33%"></td>
+</tr>
+</table>
+
 ## What it does
 
 - **Gas station search** — find the nearest gas stations by city, postal
