@@ -2,7 +2,8 @@
 
 A cross-platform mobile app (React Native, iOS + Android) with a Python
 backend that helps drivers find fuel and charging options, track prices,
-and get quick answers from a built-in AI assistant.
+and includes a built-in AI agent that plans and executes multi-step
+lookups on its own, rather than just answering from a script.
 
 This is a **personal portfolio / learning project**, built to practice
 full-stack mobile development — a React Native client, a Python API
@@ -19,9 +20,10 @@ rate-limited or occasionally unavailable.
   midgrade, premium, diesel), distance, and star ratings.
 - **EV charging station search** — find nearby EV charging stations, with
   network, connector types, charging speed, and distance.
-- **AI chat assistant** — a tool-calling agent for fuel- and EV-related
-  questions, able to pull in live station results, price forecasts, and
-  exact fuel-cost math as part of its answers (see below).
+- **AI agent** — plans and carries out multi-step lookups for fuel- and
+  EV-related requests on its own (find stations, compare them, do the
+  math), rather than answering a single canned question at a time (see
+  below).
 - **Price forecasting** — a short-term local gas price outlook, combining
   the current local average with a broader regional pricing trend.
 - **Favorites** — save stations from search results, reorder them, and
@@ -29,15 +31,17 @@ rate-limited or occasionally unavailable.
 - **Shared location** — sharing your location once carries across the
   app's other tabs instead of asking again in each one.
 
-## AI chat agent
+## AI agent
 
-The chat assistant is a tool-calling agent built on top of a large-
-language-model API, not a single request/response call. On each turn,
-the model can choose to invoke one or more backend "tools" — the same
-search and forecasting logic the rest of the app uses — rather than
-guessing, read the results, and either call another tool or write a
-final reply. Rounds are capped so a conversation always ends with an
-actual answer instead of looping.
+This isn't a chatbot answering from a script — it's an agent that plans
+and executes a sequence of actions to satisfy a request. Given a goal
+("what would it cost to fill up at the cheapest station near me?"), it
+decides for itself which of its tools to call, in what order, feeds each
+result into the next step, and keeps going — up to a bounded number of
+steps — until it has everything it needs to give a real, grounded
+answer. A single request routinely becomes several tool calls chained
+together: look up nearby stations, pick the cheapest, then compute the
+exact fill-up cost — without being walked through each step.
 
 It has five tools available:
 
@@ -69,9 +73,9 @@ need to ask where you are every time.
 
 - **Mobile:** React Native (TypeScript), targeting iOS and Android
 - **Backend:** FastAPI (Python), a REST API consumed by the mobile app
-- **AI agent:** a large-language-model API with tool-calling, letting the
-  assistant invoke the same search/forecast functionality as the rest of
-  the app
+- **AI agent:** a bounded tool-calling loop over a large-language-model
+  API, giving the agent access to the same search/forecast functionality
+  as the rest of the app
 - **Testing:** pytest (backend), Jest (mobile)
 
 Station, charging, and pricing data come from a mix of free public and
@@ -107,7 +111,7 @@ npm install
 npm run ios       # or: npm run android
 ```
 
-Some features (EV search, gas price forecasting, the AI assistant) need
+Some features (EV search, gas price forecasting, the AI agent) need
 their own free API key set in `backend/.env` — see the comments in
 `.env.example` for details. The app degrades gracefully without them;
 those specific features just won't return results.
