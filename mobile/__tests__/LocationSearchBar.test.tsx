@@ -55,6 +55,25 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
+it('gives the input an explicit dark text color, not the platform default', async () => {
+  // The Android theme is a fixed light theme, not DayNight (see
+  // android/app/src/main/res/values/styles.xml) — but that alone only
+  // protects native-default colors, not styles this component sets
+  // itself. Explicit here too so typed text stays readable regardless of
+  // the device's system theme, since this whole app doesn't offer a dark
+  // mode of its own.
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = renderSearchBar();
+  });
+
+  const input = renderer!.root.findByType(TextInput);
+  const style = ([] as Record<string, unknown>[]).concat(
+    input.props.style as never,
+  );
+  expect(style.some(s => s?.color === '#222')).toBe(true);
+});
+
 it('submits a typed city/postal code search', async () => {
   const onSearch = jest.fn<(query: LocationQuery) => void>();
   let renderer: ReactTestRenderer;

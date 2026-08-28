@@ -311,6 +311,7 @@ const styles = StyleSheet.create({
     height: 44,
     paddingHorizontal: 12,
     fontSize: 15,
+    color: '#222',
   },
   iconButton: {
     width: 36,

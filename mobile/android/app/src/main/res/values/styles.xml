@@ -1,7 +1,15 @@
 <resources>
 
-    <!-- Base application theme. -->
-    <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
+    <!-- Base application theme. Every screen uses a fixed light palette
+         (hardcoded backgroundColor values, not theme-driven), so this
+         deliberately does NOT extend a DayNight parent: DayNight flips
+         native-default widget colors (e.g. a TextInput's default text
+         color) to their dark-mode variants when the device is in system
+         dark mode, while leaving RN's own hardcoded light backgrounds
+         unchanged — producing unreadable light-on-light text (e.g. the
+         location search bar) even though nothing in the app itself
+         changed. -->
+    <style name="AppTheme" parent="Theme.AppCompat.Light.NoActionBar">
         <!-- Customize your theme here. -->
         <item name="android:editTextBackground">@drawable/rn_edit_text_material</item>
         <item name="android:windowBackground">@android:color/white</item>
