@@ -1,6 +1,9 @@
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from app.config import Settings
+from app.services import brand_directory
 from app.services.gas_price_client import (
     GasPriceService,
     _select_brands,
@@ -164,6 +167,30 @@ def test_to_gas_station_has_no_amenities_when_missing():
     assert station.amenities == []
 
 
+# --- opportunistic brand_id capture (see brand_directory.py) ------
+
+
+def test_to_gas_station_records_brand_ids_for_primary_and_connected_brands():
+    brand_directory._KNOWN_BRAND_IDS.clear()
+    try:
+        raw = {
+            "station_id": "11982",
+            "name": "Esso",
+            "brands": [
+                {"name": "Circle K", "brandId": "7", "imageUrl": "circlek.png"},
+                {"name": "Esso", "brandId": 12, "imageUrl": "esso.png"},
+            ],
+        }
+
+        _to_gas_station(raw)
+
+        assert brand_directory.get_brand_id("Circle K") == 7
+        assert brand_directory.get_brand_id("Esso") == 12
+    finally:
+        brand_directory._KNOWN_BRAND_IDS.clear()
+        brand_directory._KNOWN_BRAND_IDS.update({"costco": 38})
+
+
 # --- solver_url wiring (anti-bot solver, for blocked deploys) ------
 
 
@@ -238,6 +265,34 @@ def test_get_gas_price_service_reads_timeout_ms_from_settings():
         fake_gas_client.assert_called_once_with(solver_url=None, timeout=180000)
     finally:
         get_gas_price_service.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_search_nearest_stations_passes_brand_id_to_the_underlying_client():
+    service = GasPriceService()
+    service._client.price_lookup_service = AsyncMock(
+        return_value={"results": [], "next_cursor": None}
+    )
+
+    await service.search_nearest_stations(lat=43.36, lon=-80.31, limit=20, brand_id=38)
+
+    service._client.price_lookup_service.assert_awaited_once_with(
+        lat=43.36, lon=-80.31, limit=20, cursor=None, brand_id=38
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_nearest_stations_defaults_to_no_brand_id():
+    service = GasPriceService()
+    service._client.price_lookup_service = AsyncMock(
+        return_value={"results": [], "next_cursor": None}
+    )
+
+    await service.search_nearest_stations(lat=43.36, lon=-80.31, limit=20)
+
+    service._client.price_lookup_service.assert_awaited_once_with(
+        lat=43.36, lon=-80.31, limit=20, cursor=None, brand_id=None
+    )
 
 
 def test_get_gas_price_service_returns_the_same_instance_across_calls():
