@@ -3059,6 +3059,25 @@ class ChatService:
                 "as-is, do not re-sort or recompute the ranking"
             )
 
+        # Distance is the implicit default ranking whenever nothing else
+        # (fuel_grade/sort_by_recency/sort_by_distance) was requested —
+        # made explicit here rather than trusted to already hold: a
+        # brand_id-scoped fetch (see _search_stations_by_brand_ids) isn't
+        # guaranteed to already be nearest-first the way the plain pool
+        # fetch reliably is (confirmed live: a real San Mateo, CA search
+        # for Costco returned a station out of distance order). Applies
+        # whether or not top_n was given, so a "show me more" follow-up
+        # stays consistent with what a plain first ask already showed —
+        # never surfacing something closer than what was already
+        # highlighted.
+        no_active_ranking = (
+            cheapest_station is None
+            and most_recent_station is None
+            and nearest_station is None
+        )
+        if no_active_ranking:
+            stations = _sort_by_distance(stations) or stations
+
         # Cards should mirror what the reply actually highlights, not the
         # whole candidate pool the tool searched through — once a
         # specific "the answer" station exists (cheapest/most_recent/
@@ -3071,12 +3090,7 @@ class ChatService:
         # `stations` order — a "top N ranked" (or plain "N nearby") ask
         # wants exactly N cards, not each field's own single pick merged
         # together.
-        is_plain_unranked_search = (
-            not top_n
-            and cheapest_station is None
-            and most_recent_station is None
-            and nearest_station is None
-        )
+        is_plain_unranked_search = no_active_ranking and not top_n
         if top_n:
             highlighted_stations = stations[:top_n]
         elif is_plain_unranked_search:

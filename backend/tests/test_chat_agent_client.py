@@ -1505,6 +1505,70 @@ async def test_no_brand_filter_plain_search_also_defaults_to_three():
 
 
 @pytest.mark.asyncio
+async def test_plain_unranked_search_sorts_by_distance_even_if_the_fetch_did_not():
+    # Confirmed live: a brand_id-scoped fetch isn't guaranteed to already
+    # be nearest-first the way the plain pool fetch reliably is (a real
+    # San Mateo, CA search for Costco returned a station out of distance
+    # order) — the default top-3 selection must sort explicitly rather
+    # than trust the fetch's own order.
+    gas_price = FakeGasPriceService(
+        stations=[
+            _make_station("Shell Far", distance_miles=5.0),
+            _make_station("Shell Near", distance_miles=0.5),
+            _make_station("Shell Mid", distance_miles=2.0),
+            _make_station("Shell Farthest", distance_miles=9.0),
+        ]
+    )
+    fake_post = AsyncMock(
+        side_effect=[
+            _function_call_response(
+                "find_nearby_gas_stations", {"brands": ["Shell"]}
+            ),
+            _text_response("Here are a few Shell stations."),
+        ]
+    )
+    with patch("httpx.AsyncClient.post", new=fake_post):
+        reply = await _configured_service(gas_price).send(
+            [ChatMessage(role="user", content="What is the price at Shell?")],
+            gas_location=(1.0, 2.0),
+        )
+
+    assert [s.distance_miles for s in reply.gas_stations] == [0.5, 2.0, 5.0]
+
+
+@pytest.mark.asyncio
+async def test_a_follow_up_top_n_ask_stays_consistent_with_the_earlier_default():
+    # "show me more" after a plain default-3 ask typically becomes a
+    # bare top_n call, with no explicit sort_by_distance — it must never
+    # surface something closer than what the first, unranked ask already
+    # showed, which requires the same explicit distance sort as the
+    # plain case above, not just whatever order the fetch returned.
+    gas_price = FakeGasPriceService(
+        stations=[
+            _make_station("Shell Far", distance_miles=5.0),
+            _make_station("Shell Near", distance_miles=0.5),
+            _make_station("Shell Mid", distance_miles=2.0),
+            _make_station("Shell Farthest", distance_miles=9.0),
+        ]
+    )
+    fake_post = AsyncMock(
+        side_effect=[
+            _function_call_response(
+                "find_nearby_gas_stations", {"brands": ["Shell"], "top_n": 3}
+            ),
+            _text_response("Here are 3 Shell stations."),
+        ]
+    )
+    with patch("httpx.AsyncClient.post", new=fake_post):
+        reply = await _configured_service(gas_price).send(
+            [ChatMessage(role="user", content="show me more Shell stations")],
+            gas_location=(1.0, 2.0),
+        )
+
+    assert [s.distance_miles for s in reply.gas_stations] == [0.5, 2.0, 5.0]
+
+
+@pytest.mark.asyncio
 async def test_no_stations_report_the_requested_fuel_grade():
     gas_price = FakeGasPriceService(
         stations=[_make_station("A", premium=None), _make_station("B", premium=None)]
