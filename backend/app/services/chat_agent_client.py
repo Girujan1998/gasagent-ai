@@ -221,18 +221,19 @@ FIND_STATIONS_TOOL: dict[str, Any] = {
             "top_n": {
                 "type": "integer",
                 "description": (
-                    "Pass this when the user wants more than ONE ranked "
-                    "result — 'the 5 cheapest gas stations', 'top 3 "
-                    "nearest stations' → top_n: 5 or 3. Only meaningful "
-                    "paired with whichever ranking param matches what's "
-                    "being ranked (fuel_grade for cheapest, "
-                    "sort_by_recency for freshest, sort_by_distance for "
-                    "closest) — ignored otherwise. Omit entirely for a "
-                    "single-answer ranking question ('the cheapest "
-                    "station', 'the closest station') — that already "
-                    "returns exactly one answer, or for a plain unranked "
-                    "search, which already returns the full matching "
-                    "list."
+                    "How many results to return. Pass this whenever the "
+                    "user names a specific count — 'the 5 cheapest gas "
+                    "stations', 'top 3 nearest stations', 'the 12 "
+                    "nearest Shells', 'show me 8 Petro-Canada stations' "
+                    "→ top_n: 5, 3, 12, or 8 — whether or not a ranking "
+                    "param is also set. A plain search with no count "
+                    "named (e.g. 'What is the price at Shell?') already "
+                    "returns a small default set on its own — omit "
+                    "top_n for that; only pass it to request a specific "
+                    "number instead. Omit entirely for a single-answer "
+                    "ranking question ('the cheapest station', 'the "
+                    "closest station') — that already returns exactly "
+                    "one answer regardless of top_n."
                 ),
             },
         },
@@ -879,6 +880,16 @@ GAS_AND_EV_MAX_STATIONS_IN_RESPONSE = 15
 # stations" card list beyond this is neither a realistic ask nor worth
 # the tokens; matches EV_MAX_STATIONS_IN_RESPONSE's existing cap.
 MAX_TOP_N = 20
+
+# A plain gas-station search with no ranking (no fuel_grade/
+# sort_by_recency/sort_by_distance) and no explicit top_n from the user
+# used to return every matching station — e.g. "What is the price at
+# Shell?" showing all 20 nearest Shells instead of a manageable few.
+# Defaults that case to the nearest few instead; station_count in the
+# response still reports the true total, so the model can say e.g.
+# "found 12 Shell stations, here are the 3 closest" and the user can
+# ask for a specific count (top_n) to see more.
+DEFAULT_UNRANKED_TOP_N = 3
 
 # Mirrors mobile/src/utils/brandFilter.ts's WELL_KNOWN_BRANDS — the same
 # recognized-chain list the Gas tab's own brand filter uses. Used by
@@ -3053,14 +3064,23 @@ class ChatService:
         # specific "the answer" station exists (cheapest/most_recent/
         # nearest), only that shows as a card, same as a "closest pair"
         # question shows just the pair, not every nearby station. A
-        # plain, unranked search has no such single answer, so its full
-        # matching list (what the reply actually lists) becomes cards
-        # instead. top_n overrides this to the top N of the already
-        # precedence-resolved `stations` order — a "top N ranked" ask
-        # wants N cards from ONE ranking, not each field's own single
-        # pick merged together.
+        # plain, unranked search with no explicit count named defaults
+        # to the nearest few (DEFAULT_UNRANKED_TOP_N) instead of every
+        # match — see that constant's own comment for why. top_n
+        # overrides this to the top N of the already precedence-resolved
+        # `stations` order — a "top N ranked" (or plain "N nearby") ask
+        # wants exactly N cards, not each field's own single pick merged
+        # together.
+        is_plain_unranked_search = (
+            not top_n
+            and cheapest_station is None
+            and most_recent_station is None
+            and nearest_station is None
+        )
         if top_n:
             highlighted_stations = stations[:top_n]
+        elif is_plain_unranked_search:
+            highlighted_stations = stations[:DEFAULT_UNRANKED_TOP_N]
         else:
             highlighted_stations = [
                 s
@@ -3071,12 +3091,26 @@ class ChatService:
             _merge_stations([], highlighted_stations) if highlighted_stations else stations
         )
 
+        # The model only ever sees this same capped set for a plain
+        # unranked search too — giving it the full pool here would let
+        # it describe more stations in its reply than the cards actually
+        # show. Every other case (top_n given, or a ranking's own
+        # single-answer field) is unaffected and still sees every match.
+        payload_stations = highlighted_stations if is_plain_unranked_search else stations
+
         payload: dict[str, Any] = {
             "searched_lat": res_lat,
             "searched_lon": res_lon,
             "station_count": len(stations),
-            "stations": [_station_summary(s) for s in stations],
+            "stations": [_station_summary(s) for s in payload_stations],
         }
+        if is_plain_unranked_search and len(stations) > DEFAULT_UNRANKED_TOP_N:
+            payload["note"] = (
+                f"Only the {DEFAULT_UNRANKED_TOP_N} nearest of the "
+                f"{len(stations)} matching stations are included above — "
+                "tell the user more are available and to ask for a "
+                "specific count (e.g. 'the 10 nearest') to see more."
+            )
         if sorted_by:
             payload["sorted_by"] = sorted_by
         if fuel_grade:

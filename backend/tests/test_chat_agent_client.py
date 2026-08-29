@@ -1333,6 +1333,177 @@ async def test_brand_id_scoped_zero_results_reports_a_clear_message():
     assert error == "No Costco stations were found near that location."
 
 
+# --- default result count for a plain, unranked search ---------------------
+
+
+@pytest.mark.asyncio
+async def test_plain_unranked_search_defaults_to_the_nearest_three():
+    # "What is the price at Shell?" — a brand named, but no count, no
+    # fuel_grade/sort_by_recency/sort_by_distance, and no top_n. Should
+    # show only the 3 nearest, not every match.
+    gas_price = FakeGasPriceService(
+        stations=[
+            _make_station("Shell 1", distance_miles=0.5),
+            _make_station("Shell 2", distance_miles=1.0),
+            _make_station("Shell 3", distance_miles=1.5),
+            _make_station("Shell 4", distance_miles=2.0),
+            _make_station("Shell 5", distance_miles=2.5),
+        ]
+    )
+    fake_post = AsyncMock(
+        side_effect=[
+            _function_call_response(
+                "find_nearby_gas_stations", {"brands": ["Shell"]}
+            ),
+            _text_response("Here are a few Shell stations."),
+        ]
+    )
+    with patch("httpx.AsyncClient.post", new=fake_post):
+        reply = await _configured_service(gas_price).send(
+            [ChatMessage(role="user", content="What is the price at Shell?")],
+            gas_location=(1.0, 2.0),
+        )
+
+    assert len(reply.gas_stations) == 3
+    assert [s.distance_miles for s in reply.gas_stations] == [0.5, 1.0, 1.5]
+
+    second_payload = fake_post.call_args_list[1].kwargs["json"]
+    function_response = next(
+        c for c in second_payload["contents"] if "functionResponse" in c["parts"][0]
+    )
+    payload = function_response["parts"][0]["functionResponse"]["response"]
+    # The model only ever sees the same 3 — it can't describe more than
+    # what's actually shown — but station_count still reports the true
+    # total, and a note explains more are available.
+    assert len(payload["stations"]) == 3
+    assert payload["station_count"] == 5
+    assert "note" in payload and "3" in payload["note"] and "5" in payload["note"]
+
+
+@pytest.mark.asyncio
+async def test_plain_unranked_search_shows_every_match_at_or_under_the_default():
+    gas_price = FakeGasPriceService(
+        stations=[
+            _make_station("Shell 1", distance_miles=0.5),
+            _make_station("Shell 2", distance_miles=1.0),
+        ]
+    )
+    fake_post = AsyncMock(
+        side_effect=[
+            _function_call_response(
+                "find_nearby_gas_stations", {"brands": ["Shell"]}
+            ),
+            _text_response("Here are the Shell stations."),
+        ]
+    )
+    with patch("httpx.AsyncClient.post", new=fake_post):
+        reply = await _configured_service(gas_price).send(
+            [ChatMessage(role="user", content="What is the price at Shell?")],
+            gas_location=(1.0, 2.0),
+        )
+
+    assert len(reply.gas_stations) == 2
+    second_payload = fake_post.call_args_list[1].kwargs["json"]
+    function_response = next(
+        c for c in second_payload["contents"] if "functionResponse" in c["parts"][0]
+    )
+    payload = function_response["parts"][0]["functionResponse"]["response"]
+    assert len(payload["stations"]) == 2
+    # Nothing was actually left out, so no "ask for more" note is needed.
+    assert "note" not in payload
+
+
+@pytest.mark.asyncio
+async def test_explicit_top_n_overrides_the_default_of_three():
+    # "What is the price of the 12 nearest Shells?" — a specific count
+    # named, so the default of 3 doesn't apply; the model is expected to
+    # pass top_n (and typically sort_by_distance) itself.
+    stations = [_make_station(f"Shell {i}", distance_miles=i) for i in range(1, 13)]
+    gas_price = FakeGasPriceService(stations=stations)
+    fake_post = AsyncMock(
+        side_effect=[
+            _function_call_response(
+                "find_nearby_gas_stations",
+                {"brands": ["Shell"], "sort_by_distance": True, "top_n": 12},
+            ),
+            _text_response("Here are the 12 nearest Shell stations."),
+        ]
+    )
+    with patch("httpx.AsyncClient.post", new=fake_post):
+        reply = await _configured_service(gas_price).send(
+            [
+                ChatMessage(
+                    role="user", content="What is the price of the 12 nearest Shells?"
+                )
+            ],
+            gas_location=(1.0, 2.0),
+        )
+
+    assert len(reply.gas_stations) == 12
+
+
+@pytest.mark.asyncio
+async def test_a_single_answer_ranking_is_unaffected_by_the_default():
+    # Ranked, single-answer questions (e.g. "cheapest Shell station") are
+    # a different code path entirely — already exactly one answer, never
+    # capped or expanded by DEFAULT_UNRANKED_TOP_N.
+    gas_price = FakeGasPriceService(
+        stations=[
+            _make_station("Shell 1", price=170.0, distance_miles=0.5),
+            _make_station("Shell 2", price=160.0, distance_miles=1.0),
+        ]
+    )
+    fake_post = AsyncMock(
+        side_effect=[
+            _function_call_response(
+                "find_nearby_gas_stations",
+                {"brands": ["Shell"], "fuel_grade": "regular"},
+            ),
+            _text_response("The cheapest Shell is 160.0¢."),
+        ]
+    )
+    with patch("httpx.AsyncClient.post", new=fake_post):
+        reply = await _configured_service(gas_price).send(
+            [ChatMessage(role="user", content="cheapest Shell near me?")],
+            gas_location=(1.0, 2.0),
+        )
+
+    assert len(reply.gas_stations) == 1
+    assert reply.gas_stations[0].regular.price == 160.0
+    second_payload = fake_post.call_args_list[1].kwargs["json"]
+    function_response = next(
+        c for c in second_payload["contents"] if "functionResponse" in c["parts"][0]
+    )
+    payload = function_response["parts"][0]["functionResponse"]["response"]
+    # Unchanged pre-existing behavior: the model still sees every match
+    # for a ranked query, not just the capped default.
+    assert len(payload["stations"]) == 2
+    assert "note" not in payload
+
+
+@pytest.mark.asyncio
+async def test_no_brand_filter_plain_search_also_defaults_to_three():
+    # The same default applies to a totally unfiltered "gas near me"
+    # question — not just a named-brand one — since both share the same
+    # plain-unranked-search code path.
+    gas_price = FakeGasPriceService(
+        stations=[_make_station(f"Station {i}", distance_miles=i) for i in range(1, 6)]
+    )
+    fake_post = AsyncMock(
+        side_effect=[
+            _function_call_response("find_nearby_gas_stations", {}),
+            _text_response("Here are a few nearby stations."),
+        ]
+    )
+    with patch("httpx.AsyncClient.post", new=fake_post):
+        reply = await _configured_service(gas_price).send(
+            [ChatMessage(role="user", content="gas near me?")],
+            gas_location=(1.0, 2.0),
+        )
+
+    assert len(reply.gas_stations) == 3
+
+
 @pytest.mark.asyncio
 async def test_no_stations_report_the_requested_fuel_grade():
     gas_price = FakeGasPriceService(
