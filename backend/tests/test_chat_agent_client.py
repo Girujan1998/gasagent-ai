@@ -44,24 +44,44 @@ class _FakeLlmResponse:
 
 
 class FakeGasPriceService:
-    def __init__(self, stations=None, error=None, pages=None):
+    def __init__(self, stations=None, error=None, pages=None, brand_pages=None):
         # `pages`: {cursor_used_to_request: (stations, next_cursor)};
         # `None` key = page 1. `stations` is shorthand for a single page
         # with no follow-up (`{None: (stations, None)}`).
+        # `brand_pages`: {brand_id: (stations, next_cursor)} — a separate
+        # dict from `pages`, since a brand_id-scoped call never carries a
+        # cursor from the plain nearest-any-brand pool.
         self._pages = (
             dict(pages) if pages is not None else {None: (stations or [], None)}
         )
+        self._brand_pages = dict(brand_pages) if brand_pages is not None else {}
         self._error = error
         self.calls: list[dict] = []
 
     async def search_nearest_stations(
-        self, *, query=None, lat=None, lon=None, limit=10, cursor=None
+        self, *, query=None, lat=None, lon=None, limit=10, cursor=None, brand_id=None
     ):
         self.calls.append(
-            {"query": query, "lat": lat, "lon": lon, "limit": limit, "cursor": cursor}
+            {
+                "query": query,
+                "lat": lat,
+                "lon": lon,
+                "limit": limit,
+                "cursor": cursor,
+                "brand_id": brand_id,
+            }
         )
         if self._error:
             raise self._error
+        if brand_id is not None:
+            if brand_id not in self._brand_pages:
+                raise AssertionError(
+                    f"unexpected brand_id-scoped call with brand_id={brand_id!r}"
+                )
+            stations, next_cursor = self._brand_pages[brand_id]
+            return StationSearchResult(
+                stations=stations, next_cursor=next_cursor, lat=lat or 0.0, lon=lon or 0.0
+            )
         if cursor not in self._pages:
             raise AssertionError(f"unexpected gas-price lookup call with cursor={cursor!r}")
         stations, next_cursor = self._pages[cursor]
@@ -458,6 +478,7 @@ async def test_calls_the_tool_and_returns_a_final_reply_using_its_results():
             "lon": 2.0,
             "limit": GAS_PRICE_PAGE_SIZE,
             "cursor": None,
+            "brand_id": None,
         }
     ]
 
@@ -496,6 +517,7 @@ async def test_geocodes_a_named_place_from_the_function_call_args():
             "lon": None,
             "limit": GAS_PRICE_PAGE_SIZE,
             "cursor": None,
+            "brand_id": None,
         }
     ]
 
@@ -1142,6 +1164,173 @@ async def test_no_stations_match_the_requested_brand():
     )
     error = function_response["parts"][0]["functionResponse"]["response"]["error"]
     assert "Shell" in error
+
+
+# --- brand_id shortcut (see brand_directory.py) ------
+
+
+@pytest.mark.asyncio
+async def test_known_brand_uses_a_brand_id_scoped_search_instead_of_the_pool():
+    # Costco (brand_id 38) is seeded by default in brand_directory.py.
+    # Distance far beyond a plain nearest-any-brand pool would ever
+    # reach — the whole point of this shortcut.
+    gas_price = FakeGasPriceService(
+        brand_pages={38: ([_make_station("Costco", distance_miles=11.27)], None)}
+    )
+    fake_post = AsyncMock(
+        side_effect=[
+            _function_call_response("find_nearby_gas_stations", {"brands": ["Costco"]}),
+            _text_response("Costco is 11.27 mi away."),
+        ]
+    )
+    with patch("httpx.AsyncClient.post", new=fake_post), patch(
+        "app.services.chat_agent_client.asyncio.sleep", new=AsyncMock()
+    ) as sleep_mock:
+        reply = await _configured_service(gas_price).send(
+            [ChatMessage(role="user", content="what's the price at Costco?")],
+            gas_location=(43.36, -80.31),
+        )
+
+    assert reply.message.content == "Costco is 11.27 mi away."
+    assert gas_price.calls == [
+        {
+            "query": None,
+            "lat": 43.36,
+            "lon": -80.31,
+            "limit": GAS_PRICE_PAGE_SIZE,
+            "cursor": None,
+            "brand_id": 38,
+        }
+    ]
+    # No pool fetch happened at all, so there was never a "second page"
+    # decision to pause before.
+    sleep_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_multiple_known_brands_fetch_concurrently_and_merge():
+    chat_agent_client.brand_directory._KNOWN_BRAND_IDS["shell"] = 5
+    try:
+        gas_price = FakeGasPriceService(
+            brand_pages={
+                38: ([_make_station("Costco", distance_miles=11.27)], None),
+                5: ([_make_station("Shell", distance_miles=0.4)], None),
+            }
+        )
+        fake_post = AsyncMock(
+            side_effect=[
+                _function_call_response(
+                    "find_nearby_gas_stations", {"brands": ["Costco", "Shell"]}
+                ),
+                _text_response("Found both."),
+            ]
+        )
+        with patch("httpx.AsyncClient.post", new=fake_post), patch(
+            "app.services.chat_agent_client.asyncio.sleep", new=AsyncMock()
+        ):
+            await _configured_service(gas_price).send(
+                [ChatMessage(role="user", content="Costco or Shell near me")],
+                gas_location=(43.36, -80.31),
+            )
+
+        assert len(gas_price.calls) == 2
+        assert {c["brand_id"] for c in gas_price.calls} == {38, 5}
+        second_payload = fake_post.call_args_list[1].kwargs["json"]
+        function_response = next(
+            c for c in second_payload["contents"] if "functionResponse" in c["parts"][0]
+        )
+        payload = function_response["parts"][0]["functionResponse"]["response"]
+        assert {s["name"] for s in payload["stations"]} == {"Costco", "Shell"}
+    finally:
+        del chat_agent_client.brand_directory._KNOWN_BRAND_IDS["shell"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_brand_falls_back_to_the_pool_search():
+    gas_price = FakeGasPriceService(
+        pages={
+            None: ([_make_station("Esso", distance_miles=0.3)], "20"),
+            "20": ([_make_station("Some Unmapped Brand", distance_miles=1.2)], None),
+        }
+    )
+    fake_post = AsyncMock(
+        side_effect=[
+            _function_call_response(
+                "find_nearby_gas_stations", {"brands": ["Some Unmapped Brand"]}
+            ),
+            _text_response("Found it further out."),
+        ]
+    )
+    with patch("httpx.AsyncClient.post", new=fake_post), patch(
+        "app.services.chat_agent_client.asyncio.sleep", new=AsyncMock()
+    ) as sleep_mock:
+        await _configured_service(gas_price).send(
+            [ChatMessage(role="user", content="find Some Unmapped Brand near me")],
+            gas_location=(1.0, 2.0),
+        )
+
+    # Exactly today's existing pool-fetch behavior — no brand_id used.
+    assert len(gas_price.calls) == 2
+    assert all(c["brand_id"] is None for c in gas_price.calls)
+    sleep_mock.assert_awaited_once_with(chat_agent_client.SECOND_PAGE_PAUSE_SECONDS)
+
+
+@pytest.mark.asyncio
+async def test_mixed_known_and_unknown_brands_falls_back_entirely():
+    # Costco (known) + an unmapped brand — the shortcut is all-or-
+    # nothing, so this falls back to the plain pool search for both
+    # rather than partially optimizing.
+    gas_price = FakeGasPriceService(
+        stations=[_make_station("Costco", distance_miles=0.5)]
+    )
+    fake_post = AsyncMock(
+        side_effect=[
+            _function_call_response(
+                "find_nearby_gas_stations",
+                {"brands": ["Costco", "Some Unmapped Brand"]},
+            ),
+            _text_response("Found Costco nearby."),
+        ]
+    )
+    with patch("httpx.AsyncClient.post", new=fake_post), patch(
+        "app.services.chat_agent_client.asyncio.sleep", new=AsyncMock()
+    ):
+        await _configured_service(gas_price).send(
+            [ChatMessage(role="user", content="Costco or Some Unmapped Brand")],
+            gas_location=(1.0, 2.0),
+        )
+
+    assert len(gas_price.calls) == 1
+    assert gas_price.calls[0]["brand_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_brand_id_scoped_zero_results_reports_a_clear_message():
+    gas_price = FakeGasPriceService(brand_pages={38: ([], None)})
+    fake_post = AsyncMock(
+        side_effect=[
+            _function_call_response("find_nearby_gas_stations", {"brands": ["Costco"]}),
+            _text_response("No Costco nearby, sorry."),
+        ]
+    )
+    with patch("httpx.AsyncClient.post", new=fake_post), patch(
+        "app.services.chat_agent_client.asyncio.sleep", new=AsyncMock()
+    ):
+        reply = await _configured_service(gas_price).send(
+            [ChatMessage(role="user", content="what's the price at Costco?")],
+            gas_location=(1.0, 2.0),
+        )
+
+    assert reply.message.content == "No Costco nearby, sorry."
+    second_payload = fake_post.call_args_list[1].kwargs["json"]
+    function_response = next(
+        c for c in second_payload["contents"] if "functionResponse" in c["parts"][0]
+    )
+    error = function_response["parts"][0]["functionResponse"]["response"]["error"]
+    # Not the "among the N nearest stations checked" pool-search framing
+    # — a brand_id-scoped search never fetches a nearest-any-brand pool
+    # to check in the first place.
+    assert error == "No Costco stations were found near that location."
 
 
 @pytest.mark.asyncio
@@ -2168,6 +2357,44 @@ async def test_combined_search_filters_are_applied_before_pairing():
     assert filtered["closest_pair"]["ev_charger"]["name"] == "ChargePoint Far"
     assert filtered["filters_applied"]["brands"] == ["Shell"]
     assert filtered["filters_applied"]["networks"] == ["ChargePoint"]
+
+
+@pytest.mark.asyncio
+async def test_combined_search_uses_a_brand_id_scoped_search_for_a_known_brand():
+    # Costco (brand_id 38) is seeded by default in brand_directory.py.
+    gas_price = FakeGasPriceService(
+        brand_pages={38: ([_gas_station_at("Costco Far", 50.0, -80.0, distance_miles=25.0)], None)}
+    )
+    ev_search = FakeEvSearchService(stations=[])
+
+    payload = await _run_combined_call(gas_price, ev_search, {"brands": ["Costco"]})
+
+    assert gas_price.calls == [
+        {
+            "query": None,
+            "lat": 1.0,
+            "lon": 2.0,
+            "limit": GAS_PRICE_PAGE_SIZE,
+            "cursor": None,
+            "brand_id": 38,
+        }
+    ]
+    assert [s["name"] for s in payload["gas_stations"]] == ["Costco Far"]
+
+
+@pytest.mark.asyncio
+async def test_combined_search_unknown_brand_falls_back_to_the_pool_search():
+    gas_price = FakeGasPriceService(
+        stations=[_gas_station_at("Some Unmapped Brand", 43.0, -80.0)]
+    )
+    ev_search = FakeEvSearchService(stations=[])
+
+    payload = await _run_combined_call(
+        gas_price, ev_search, {"brands": ["Some Unmapped Brand"]}
+    )
+
+    assert gas_price.calls[0]["brand_id"] is None
+    assert [s["name"] for s in payload["gas_stations"]] == ["Some Unmapped Brand"]
 
 
 @pytest.mark.asyncio

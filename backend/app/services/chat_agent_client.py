@@ -10,11 +10,13 @@ from py_gasbuddy import APIError, CloudflareBlocked, LibraryError, MissingSearch
 
 from app.config import get_settings
 from app.models.schemas import ChatMessage, EvStation, FuelPrice, GasStation
+from app.services import brand_directory
 from app.services.ev_directory_client import EvDirectoryError
 from app.services.ev_search import EvSearchService, get_ev_search_service
 from app.services.gas_price_client import (
     GAS_PRICE_PAGE_SIZE,
     GasPriceService,
+    StationSearchResult,
     format_price_like,
     get_gas_price_service,
 )
@@ -1307,6 +1309,72 @@ def _matches_any_brand(station: GasStation, brands: list[str]) -> bool:
     return any(_brand_matches(station, b) for b in brands)
 
 
+def _known_brand_ids(brands: list[str] | None) -> list[int] | None:
+    """Distinct GasBuddy brand_ids for every name in `brands`, via
+    brand_directory.py — or None if any single name isn't known yet,
+    signaling "no brand_id-scoped shortcut available; fall back to a
+    plain nearest-any-brand search". A named-brand search this hasn't
+    seen before falls back the same way, but real traffic is what grows
+    the directory (see gas_price_client.py's _to_gas_station), not
+    guesswork here."""
+    if not brands:
+        return None
+    ids: list[int] = []
+    for name in brands:
+        brand_id = brand_directory.get_brand_id(name)
+        if brand_id is None:
+            return None
+        if brand_id not in ids:
+            ids.append(brand_id)
+    return ids
+
+
+async def _search_stations_by_brand_ids(
+    gas_price: GasPriceService,
+    brand_ids: list[int],
+    *,
+    query: str | None = None,
+    lat: float | None = None,
+    lon: float | None = None,
+) -> StationSearchResult:
+    """Fetches one page per distinct brand_id concurrently — GasBuddy's
+    own server-side brand filter, sorted nearest-first *for that brand*
+    regardless of how far its nearest station is, unlike paging through
+    a nearest-any-brand pool hoping the brand turns up. Merges the pages,
+    deduplicating by station_id (a station could plausibly appear under
+    two different requested brands in an edge case). Always returns
+    next_cursor=None — a single page per brand has comfortably covered
+    every real case seen in testing, so there's no second-page fetch for
+    this path the way there is for the nearest-any-brand one.
+
+    Resolves lat/lon once up front, same as GasPriceService.
+    search_nearest_stations' own query fallback (mirrored here rather
+    than reused, since this needs the resolved coordinates *before*
+    firing its own concurrent per-brand calls, to avoid a redundant
+    geocode per brand) — so a bad `query` raises GeocodingError from
+    this coroutine itself, exactly like a plain search_nearest_stations
+    call would, for callers (e.g. an asyncio.gather with
+    return_exceptions=True) that depend on that."""
+    if lat is None or lon is None:
+        lat, lon = await geocode(query) if query else (None, None)
+
+    results = await asyncio.gather(
+        *(
+            gas_price.search_nearest_stations(
+                lat=lat, lon=lon, brand_id=brand_id, limit=GAS_PRICE_PAGE_SIZE
+            )
+            for brand_id in brand_ids
+        )
+    )
+    merged: dict[str, GasStation] = {}
+    for result in results:
+        for station in result.stations:
+            merged.setdefault(station.station_id, station)
+    return StationSearchResult(
+        stations=list(merged.values()), next_cursor=None, lat=lat, lon=lon
+    )
+
+
 def _is_major_brand(station: GasStation) -> bool:
     """The code-side replacement for asking the model to judge which
     brands count as "big name" — reuses the same matching logic as an
@@ -1409,7 +1477,14 @@ def _no_match_message(
     any_nearby: bool,
     scanned_count: int,
     brand_tier: str | None = None,
+    brand_id_scoped: bool = False,
 ) -> str:
+    if brand_id_scoped:
+        # A brand_id-scoped search asks GasBuddy directly for this brand
+        # near this location — it never fetches a nearest-any-brand pool
+        # at all, so the usual "among the N nearest stations checked"
+        # framing below (which assumes exactly that) doesn't apply here.
+        return f"No {_list_descriptor(brands, brand_tier)} stations were found near that location."
     if not any_nearby:
         return "No gas stations were found near that location at all."
     descriptor = _list_descriptor(brands, brand_tier)
@@ -2264,21 +2339,36 @@ class ChatService:
         brands: list[str] | None,
         max_distance_miles: float | None,
         brand_tier: str | None = None,
-    ) -> tuple[list[GasStation], float, float, int, bool]:
-        """Fetches page 1 (up to GAS_PRICE_PAGE_SIZE stations) and, only if
-        page 1 doesn't already satisfy brands/brand_tier/max_distance_
-        miles, a second page (up to GAS_PRICE_PAGE_SIZE more — 40 stations
-        total across at most 2 calls), pausing SECOND_PAGE_PAUSE_SECONDS
-        first so two rapid gas-price lookup calls in one tool call don't look
+    ) -> tuple[list[GasStation], float, float, int, bool, bool]:
+        """If every name in `brands` has a known brand_id (see
+        brand_directory.py), fetches one brand-scoped page per id
+        directly — GasBuddy's own server-side brand filter, so a brand
+        far outside a plain nearest-any-brand search still turns up.
+        Otherwise (no brands filter, or any name not yet known) fetches
+        page 1 (up to GAS_PRICE_PAGE_SIZE stations) and, only if page 1
+        doesn't already satisfy brands/brand_tier/max_distance_miles, a
+        second page (up to GAS_PRICE_PAGE_SIZE more — 40 stations total
+        across at most 2 calls), pausing SECOND_PAGE_PAUSE_SECONDS first
+        so two rapid gas-price lookup calls in one tool call don't look
         like a scripted burst. Returns (all_stations, lat, lon,
-        scanned_count, any_nearby) — exclude_brands/fuel_grade never
-        affect how many pages get fetched, only how the already-fetched
-        set is filtered/sorted afterward (see _execute_tool_call)."""
-        page1 = await self._gas_price.search_nearest_stations(
-            query=query, lat=lat, lon=lon, limit=GAS_PRICE_PAGE_SIZE
-        )
+        scanned_count, any_nearby, brand_id_scoped) — exclude_brands/
+        fuel_grade never affect how many pages get fetched, only how the
+        already-fetched set is filtered/sorted afterward (see
+        _execute_tool_call)."""
+        if lat is None or lon is None:
+            lat, lon = await geocode(query) if query else (None, None)
+
+        brand_ids = _known_brand_ids(brands)
+        if brand_ids is not None:
+            page1 = await _search_stations_by_brand_ids(
+                self._gas_price, brand_ids, lat=lat, lon=lon
+            )
+        else:
+            page1 = await self._gas_price.search_nearest_stations(
+                lat=lat, lon=lon, limit=GAS_PRICE_PAGE_SIZE
+            )
         if not page1.stations:
-            return [], page1.lat, page1.lon, 0, False
+            return [], page1.lat, page1.lon, 0, False, brand_ids is not None
 
         all_stations = list(page1.stations)
         if page1.next_cursor is not None and _needs_second_page(
@@ -2293,7 +2383,7 @@ class ChatService:
             )
             all_stations.extend(page2.stations)
 
-        return all_stations, page1.lat, page1.lon, len(all_stations), True
+        return all_stations, page1.lat, page1.lon, len(all_stations), True, False
 
     async def _execute_tool_call(
         self,
@@ -2539,10 +2629,26 @@ class ChatService:
         else:
             return {"error": NO_LOCATION_MESSAGE}
 
-        gas_result, ev_result = await asyncio.gather(
-            self._gas_price.search_nearest_stations(
+        # query/lat/lon are passed through to gas and EV independently
+        # below (each resolves its own geocoding, same as before this
+        # brand_id shortcut existed) rather than resolved once here —
+        # that's what lets a bad `query` fail both sides identically,
+        # each raising its own GeocodingError, which the
+        # isinstance(..., GeocodingError) check below relies on to tell
+        # "bad location" apart from "no stations found there".
+        brand_ids = _known_brand_ids(brands)
+        gas_coro = (
+            _search_stations_by_brand_ids(
+                self._gas_price, brand_ids, query=query, lat=lat, lon=lon
+            )
+            if brand_ids is not None
+            else self._gas_price.search_nearest_stations(
                 query=query, lat=lat, lon=lon, limit=GAS_PRICE_PAGE_SIZE
-            ),
+            )
+        )
+
+        gas_result, ev_result = await asyncio.gather(
+            gas_coro,
             self._ev_search.search_nearest_ev_stations(
                 query=query, lat=lat, lon=lon, limit=GAS_AND_EV_FETCH_LIMIT, radius_km=max_distance_km
             ),
@@ -2783,6 +2889,7 @@ class ChatService:
                     res_lon,
                     scanned_count,
                     any_nearby,
+                    brand_id_scoped,
                 ) = await self._fetch_and_filter_stations(
                     query=query,
                     lat=lat,
@@ -2799,6 +2906,7 @@ class ChatService:
                 res_lat, res_lon = result.lat, result.lon
                 scanned_count = len(all_stations)
                 any_nearby = bool(all_stations)
+                brand_id_scoped = False
         except GeocodingError:
             return {"error": LOCATION_NOT_FOUND_MESSAGE}
         except MissingSearchData:
@@ -2827,6 +2935,7 @@ class ChatService:
                     any_nearby,
                     scanned_count,
                     brand_tier,
+                    brand_id_scoped,
                 )
             }
 

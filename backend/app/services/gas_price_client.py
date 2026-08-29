@@ -6,6 +6,7 @@ from py_gasbuddy import GasBuddy
 
 from app.config import get_settings
 from app.models.schemas import FuelPrice, GasStation
+from app.services import brand_directory
 from app.services.geocoding import geocode
 
 # The underlying lookup's own fixed page size — confirmed live that
@@ -99,6 +100,13 @@ def _to_gas_station(raw: dict[str, Any]) -> GasStation:
     address_line = ", ".join(part for part in address_parts if part) or None
 
     brands = raw.get("brands") or []
+    # Opportunistic, zero-cost learning: every raw brand entry a real
+    # response ever includes teaches brand_directory that name's id, so a
+    # later brand-scoped search (see search_nearest_stations' brand_id
+    # param) can skip straight to GasBuddy's own server-side brand filter
+    # instead of hoping that brand turns up in a nearest-any-brand pool.
+    for entry in brands:
+        brand_directory.record_brand_id(entry.get("name") or "", entry.get("brandId"))
     primary_brand, connected_brand = _select_brands(brands, raw.get("name") or "")
     brand_name = primary_brand.get("name") if primary_brand else None
     brand_logo_url = primary_brand.get("imageUrl") if primary_brand else None
@@ -149,6 +157,7 @@ class GasPriceService:
         lon: float | None = None,
         limit: int = 10,
         cursor: str | None = None,
+        brand_id: int | None = None,
     ) -> StationSearchResult:
         if lat is None or lon is None:
             if not query:
@@ -157,7 +166,7 @@ class GasPriceService:
                 lat, lon = await geocode(query)
 
         result = await self._client.price_lookup_service(
-            lat=lat, lon=lon, limit=limit, cursor=cursor
+            lat=lat, lon=lon, limit=limit, cursor=cursor, brand_id=brand_id
         )
         stations = [_to_gas_station(s) for s in result["results"]]
         return StationSearchResult(
