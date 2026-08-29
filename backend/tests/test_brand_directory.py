@@ -64,3 +64,13 @@ def test_record_brand_id_first_seen_wins():
     brand_directory.record_brand_id("Shell", 999)
 
     assert brand_directory.get_brand_id("Shell") == 5
+
+
+def test_lookup_folds_a_typographic_apostrophe_to_a_plain_one():
+    # Confirmed live: GasBuddy's own data and a user's own spelling don't
+    # always agree on which apostrophe character to use (e.g. "Sam's
+    # Club" vs "Sam’s Club") — this is a plain string key, not a fuzzy
+    # match, so without folding these resolve to two different keys.
+    brand_directory.record_brand_id("Sam's Club", 5)
+
+    assert brand_directory.get_brand_id("Sam’s Club") == 5
