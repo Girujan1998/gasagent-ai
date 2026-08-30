@@ -754,8 +754,9 @@ async def test_brand_tier_combined_with_fuel_grade():
     )
     payload = function_response["parts"][0]["functionResponse"]["response"]
     # Joe's Gas is cheaper but isn't a major brand — excluded entirely,
-    # not merely sorted last.
-    assert [s["name"] for s in payload["stations"]] == ["Canadian Tire", "Pioneer"]
+    # not merely sorted last. A ranked ask's payload["stations"] mirrors
+    # its single card, same as cheapest itself.
+    assert [s["name"] for s in payload["stations"]] == ["Canadian Tire"]
     assert payload["cheapest"]["name"] == "Canadian Tire"
 
 
@@ -1091,7 +1092,10 @@ async def test_fuel_grade_sorts_and_includes_cheapest_and_average_price():
         c for c in second_payload["contents"] if "functionResponse" in c["parts"][0]
     )
     payload = function_response["parts"][0]["functionResponse"]["response"]
-    assert [s["name"] for s in payload["stations"]] == ["B", "C", "A"]
+    # payload["stations"] mirrors the single cheapest card — average_price
+    # is still computed across all 3 matches internally, just not exposed
+    # as a full list the model could describe beyond that one answer.
+    assert [s["name"] for s in payload["stations"]] == ["B"]
     assert payload["cheapest"]["name"] == "B"
     assert payload["average_price"] == pytest.approx((205.0 + 195.0 + 199.0) / 3)
     assert "sorted_by" in payload
@@ -1128,7 +1132,9 @@ async def test_fuel_grade_combined_with_brands_reflects_only_the_matching_set():
     payload = function_response["parts"][0]["functionResponse"]["response"]
     # Esso is cheaper but wasn't requested — excluded entirely, not just
     # sorted last, and the average/cheapest reflect only the two Shells.
-    assert [s["name"] for s in payload["stations"]] == ["Shell", "Shell"]
+    # payload["stations"] itself mirrors the single cheapest-Shell card.
+    assert [s["name"] for s in payload["stations"]] == ["Shell"]
+    assert payload["stations"][0]["premium_price"] == "200.0¢"
     assert payload["cheapest"]["premium_price"] == "200.0¢"
     assert payload["average_price"] == pytest.approx((210.0 + 200.0) / 2)
 
@@ -1475,9 +1481,10 @@ async def test_a_single_answer_ranking_is_unaffected_by_the_default():
         c for c in second_payload["contents"] if "functionResponse" in c["parts"][0]
     )
     payload = function_response["parts"][0]["functionResponse"]["response"]
-    # Unchanged pre-existing behavior: the model still sees every match
-    # for a ranked query, not just the capped default.
-    assert len(payload["stations"]) == 2
+    # A ranked query's payload["stations"] mirrors its single card too —
+    # never every match, and DEFAULT_UNRANKED_TOP_N's own "ask for more"
+    # note doesn't apply here (there's no "more" to ask for).
+    assert len(payload["stations"]) == 1
     assert "note" not in payload
 
 
@@ -3005,7 +3012,9 @@ async def test_sort_by_recency_orders_freshest_first_and_sets_most_recent():
     )
     payload = await _run_gas_filter_call(gas_price, {"sort_by_recency": True})
 
-    assert [s["name"] for s in payload["stations"]] == ["Freshest", "Middle", "Oldest"]
+    # payload["stations"] mirrors the single most_recent card, not every
+    # matching station in recency order.
+    assert [s["name"] for s in payload["stations"]] == ["Freshest"]
     assert payload["most_recent"]["name"] == "Freshest"
     assert "recency" in payload["sorted_by"]
 
@@ -3024,7 +3033,7 @@ async def test_sort_by_recency_drops_stations_with_no_report_time():
 
 
 @pytest.mark.asyncio
-async def test_sort_by_recency_combined_with_fuel_grade_can_surface_different_stations():
+async def test_sort_by_recency_combined_with_fuel_grade_cards_only_the_recency_winner():
     gas_price = FakeGasPriceService(
         stations=[
             _make_station("Cheap and stale", price=140.0, regular_reported_minutes_ago=180),
@@ -3035,12 +3044,16 @@ async def test_sort_by_recency_combined_with_fuel_grade_can_surface_different_st
         gas_price, {"fuel_grade": "regular", "sort_by_recency": True}
     )
 
-    # cheapest still answers "cheapest", most_recent still answers
-    # "freshest" — they don't have to agree, and the final list/sorted_by
-    # reflect recency (the more specific ask) since both were set.
+    # cheapest still answers "cheapest" as its own field (e.g. for a
+    # genuinely dual "cheapest AND freshest" question), but recency wins
+    # the card/payload["stations"] — a confirmed-live real conversation
+    # can end up with both fuel_grade and sort_by_recency set from a
+    # single well-formed call (fuel_grade carried over as stale context
+    # from an earlier turn), and only the actual current answer
+    # (most_recent) should ever show as a card.
     assert payload["cheapest"]["name"] == "Cheap and stale"
     assert payload["most_recent"]["name"] == "Pricey but fresh"
-    assert [s["name"] for s in payload["stations"]] == ["Pricey but fresh", "Cheap and stale"]
+    assert [s["name"] for s in payload["stations"]] == ["Pricey but fresh"]
     assert "recency" in payload["sorted_by"]
 
 
@@ -3055,13 +3068,15 @@ async def test_sort_by_distance_orders_nearest_first_and_sets_nearest():
     )
     payload = await _run_gas_filter_call(gas_price, {"sort_by_distance": True})
 
-    assert [s["name"] for s in payload["stations"]] == ["Near", "Mid", "Far"]
+    # payload["stations"] mirrors the single nearest card, not every
+    # matching station in distance order.
+    assert [s["name"] for s in payload["stations"]] == ["Near"]
     assert payload["nearest"]["name"] == "Near"
     assert "distance" in payload["sorted_by"]
 
 
 @pytest.mark.asyncio
-async def test_sort_by_distance_and_fuel_grade_together_can_surface_different_stations():
+async def test_sort_by_distance_and_fuel_grade_together_cards_only_the_distance_winner():
     gas_price = FakeGasPriceService(
         stations=[
             _make_station("Near but pricey", distance_miles=0.3, price=170.0),
@@ -3072,12 +3087,13 @@ async def test_sort_by_distance_and_fuel_grade_together_can_surface_different_st
         gas_price, {"fuel_grade": "regular", "sort_by_distance": True}
     )
 
-    # nearest still answers "closest", cheapest still answers "cheapest"
-    # — they don't have to agree, and the final list/sorted_by reflect
-    # distance (the more specific ask) since both were set.
+    # nearest still answers "closest" and cheapest still answers
+    # "cheapest" as their own fields, but distance wins the card/
+    # payload["stations"] — same reasoning as the sort_by_recency +
+    # fuel_grade case above.
     assert payload["nearest"]["name"] == "Near but pricey"
     assert payload["cheapest"]["name"] == "Far but cheap"
-    assert [s["name"] for s in payload["stations"]] == ["Near but pricey", "Far but cheap"]
+    assert [s["name"] for s in payload["stations"]] == ["Near but pricey"]
     assert "distance" in payload["sorted_by"]
 
 
@@ -3311,7 +3327,13 @@ async def test_recency_query_only_cards_the_freshest_station():
 
 
 @pytest.mark.asyncio
-async def test_cheapest_and_recency_together_can_card_two_distinct_stations():
+async def test_cheapest_and_recency_together_cards_only_the_recency_winner():
+    # Confirmed live: a real follow-up in an existing conversation
+    # ("with the most recently updated price") can end up with
+    # fuel_grade still set from an earlier turn's "cheapest premium"
+    # ask, alongside a fresh sort_by_recency — the reply text correctly
+    # answers only the recency question, so the card(s) must match that,
+    # not merge in the stale cheapest field's own pick too.
     gas_price = FakeGasPriceService(
         stations=[
             _make_station("Cheap and stale", price=140.0, regular_reported_minutes_ago=180),
@@ -3324,16 +3346,16 @@ async def test_cheapest_and_recency_together_can_card_two_distinct_stations():
                 "find_nearby_gas_stations",
                 {"fuel_grade": "regular", "sort_by_recency": True},
             ),
-            _text_response("Here's the cheapest and the freshest."),
+            _text_response("The freshest price is at Pricey but fresh."),
         ]
     )
     with patch("httpx.AsyncClient.post", new=fake_post):
         reply = await _configured_service(gas_price).send(
-            [ChatMessage(role="user", content="cheapest and freshest gas near me?")],
+            [ChatMessage(role="user", content="what's the most recently updated price?")],
             gas_location=(1.0, 2.0),
         )
 
-    assert {s.name for s in reply.gas_stations} == {"Cheap and stale", "Pricey but fresh"}
+    assert [s.name for s in reply.gas_stations] == ["Pricey but fresh"]
 
 
 @pytest.mark.asyncio

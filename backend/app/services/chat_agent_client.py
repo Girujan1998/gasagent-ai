@@ -135,23 +135,33 @@ FIND_STATIONS_TOOL: dict[str, Any] = {
                 "type": "string",
                 "enum": ["regular", "midgrade", "premium", "diesel"],
                 "description": (
-                    "Pass this whenever the user asks about the "
-                    "cheapest/lowest-priced gas, the average "
-                    "price, or names a specific grade's price "
-                    "('cheapest gas near me', 'average price of "
-                    "Esso nearby', 'lowest premium price'). For "
-                    "a plain 'cheapest gas' with no grade named, "
-                    "use 'regular'. The tool's response then "
-                    "includes an explicit cheapest field (the "
-                    "actual cheapest matching station, with its "
-                    "own price_per_litre/price_unit for use with "
-                    "calculate_fuel_cost) and an average_price "
-                    "field, computed for you — answer directly "
-                    "from those fields for a 'cheapest' or "
-                    "'average price' question, never by "
-                    "comparing prices in the stations list "
-                    "yourself. Omit entirely when the user isn't "
-                    "asking about price ranking at all."
+                    "Pass this ONLY when the user wants to be "
+                    "ranked or filtered by price for one grade — "
+                    "the cheapest/lowest-priced gas, or an "
+                    "average price ('cheapest gas near me', "
+                    "'average price of Esso nearby', 'lowest "
+                    "premium price'). For a plain 'cheapest gas' "
+                    "with no grade named, use 'regular'. The "
+                    "tool's response then includes an explicit "
+                    "cheapest field (the actual cheapest matching "
+                    "station, with its own price_per_litre/"
+                    "price_unit for use with calculate_fuel_cost) "
+                    "and an average_price field, computed for you "
+                    "— answer directly from those fields for a "
+                    "'cheapest' or 'average price' question, never "
+                    "by comparing prices in the stations list "
+                    "yourself. Do NOT pass this just because a "
+                    "grade was named or mentioned earlier in the "
+                    "conversation, without a ranking word like "
+                    "'cheapest'/'lowest'/'average' — every "
+                    "returned station already reports every "
+                    "grade's own price regardless of this "
+                    "parameter, so there's nothing extra to gain "
+                    "from passing it outside an actual ranking "
+                    "ask, and doing so narrows the result down to "
+                    "a single station even for a plain 'what's the "
+                    "price at X' question. Omit entirely whenever "
+                    "the user isn't asking to be ranked by price."
                 ),
             },
             "brand_tier": {
@@ -3091,37 +3101,48 @@ class ChatService:
 
         # Cards should mirror what the reply actually highlights, not the
         # whole candidate pool the tool searched through — once a
-        # specific "the answer" station exists (cheapest/most_recent/
-        # nearest), only that shows as a card, same as a "closest pair"
-        # question shows just the pair, not every nearby station. A
-        # plain, unranked search with no explicit count named defaults
-        # to the nearest few (DEFAULT_UNRANKED_TOP_N) instead of every
-        # match — see that constant's own comment for why. top_n
-        # overrides this to the top N of the already precedence-resolved
-        # `stations` order — a "top N ranked" (or plain "N nearby") ask
-        # wants exactly N cards, not each field's own single pick merged
-        # together.
+        # specific "the answer" station exists, only that shows as a
+        # card, same as a "closest pair" question shows just the pair,
+        # not every nearby station. A plain, unranked search with no
+        # explicit count named defaults to the nearest few
+        # (DEFAULT_UNRANKED_TOP_N) instead of every match — see that
+        # constant's own comment for why. top_n overrides this to the
+        # top N of the already precedence-resolved `stations` order — a
+        # "top N ranked" (or plain "N nearby") ask wants exactly N
+        # cards.
+        #
+        # When more than one ranking field ends up active at once
+        # (fuel_grade + sort_by_recency, say), only the single winner by
+        # the same distance > recency > price precedence above becomes
+        # the card — never a merge of every active field's own pick.
+        # Confirmed live this matters even for a single, well-formed
+        # tool call: a real follow-up ("with the most recently updated
+        # price") kept fuel_grade set from the prior turn's "cheapest
+        # premium" ask alongside the new sort_by_recency, and the reply
+        # text correctly answered only the recency question — but both
+        # that turn's station AND the earlier cheapest one were still
+        # showing up as cards, since every active field's pick used to
+        # get merged in regardless of which one the text actually
+        # answered from.
         is_plain_unranked_search = no_active_ranking and not top_n
         if top_n:
             highlighted_stations = stations[:top_n]
         elif is_plain_unranked_search:
             highlighted_stations = stations[:DEFAULT_UNRANKED_TOP_N]
+        elif sort_by_distance:
+            highlighted_stations = [nearest_station]
+        elif sort_by_recency:
+            highlighted_stations = [most_recent_station]
         else:
-            highlighted_stations = [
-                s
-                for s in (cheapest_station, most_recent_station, nearest_station)
-                if s is not None
-            ]
+            highlighted_stations = [cheapest_station]
         bundle.gas_stations = (
             _merge_stations([], highlighted_stations) if highlighted_stations else stations
         )
 
-        # The model only ever sees this same capped set for a plain
-        # unranked search too — giving it the full pool here would let
-        # it describe more stations in its reply than the cards actually
-        # show. Every other case (top_n given, or a ranking's own
-        # single-answer field) is unaffected and still sees every match.
-        payload_stations = highlighted_stations if is_plain_unranked_search else stations
+        # The model only ever sees this same set — giving it the full
+        # pool here would let it describe more stations in its reply
+        # than the cards actually show.
+        payload_stations = highlighted_stations
 
         payload: dict[str, Any] = {
             "searched_lat": res_lat,
