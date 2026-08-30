@@ -23,6 +23,7 @@ import {
 } from '../api/client';
 import EvStationCard from '../components/EvStationCard';
 import StationCard from '../components/StationCard';
+import StationDetailModal from '../components/StationDetailModal';
 import {useSharedLocation} from '../store/LocationContext';
 import {requestLocationPermission} from '../utils/location';
 
@@ -78,9 +79,11 @@ type Props = {
 function MessageBubble({
   message,
   cards,
+  onStationPress,
 }: {
   message: ChatMessage;
   cards?: ChatCardsForMessage;
+  onStationPress: (station: GasStation) => void;
 }): React.JSX.Element {
   const isUser = message.role === 'user';
   return (
@@ -100,7 +103,11 @@ function MessageBubble({
         (cards.gasStations.length > 0 || cards.evStations.length > 0) && (
           <View style={styles.cardsColumn}>
             {cards.gasStations.map(station => (
-              <StationCard key={station.station_id} station={station} />
+              <StationCard
+                key={station.station_id}
+                station={station}
+                onPress={() => onStationPress(station)}
+              />
             ))}
             {cards.evStations.map(station => (
               <EvStationCard key={station.station_id} station={station} />
@@ -138,6 +145,9 @@ function ChatScreen({
   );
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
+  const [selectedStation, setSelectedStation] = useState<GasStation | null>(
+    null,
+  );
 
   // A fresh GPS fix always wins over either tab's possibly-stale last
   // search — recomputed on every send so sharing location mid-conversation
@@ -347,6 +357,7 @@ function ChatScreen({
               <MessageBubble
                 message={item}
                 cards={cardsByMessageIndex[index]}
+                onStationPress={setSelectedStation}
               />
             )}
             // Lets the user dismiss the keyboard by dragging the list,
@@ -401,6 +412,11 @@ function ChatScreen({
           <Text style={styles.sendButtonText}>Send</Text>
         </TouchableOpacity>
       </View>
+
+      <StationDetailModal
+        station={selectedStation}
+        onClose={() => setSelectedStation(null)}
+      />
     </KeyboardAvoidingView>
   );
 }

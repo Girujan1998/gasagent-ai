@@ -11,6 +11,7 @@ import {it, expect, jest, beforeAll, afterEach, afterAll} from '@jest/globals';
 import {GasStation, EvStation} from '../src/api/client';
 import EvStationCard from '../src/components/EvStationCard';
 import StationCard from '../src/components/StationCard';
+import StationDetailModal from '../src/components/StationDetailModal';
 import ChatScreen, {
   INITIAL_PERSISTED_CHAT,
   PersistedChat,
@@ -774,6 +775,52 @@ it('renders station cards when the reply includes gas/EV stations', async () => 
 
   expect(renderer!.root.findAllByType(StationCard)).toHaveLength(2);
   expect(renderer!.root.findAllByType(EvStationCard)).toHaveLength(1);
+});
+
+it('opens the station detail modal when a gas station card is tapped', async () => {
+  global.fetch = jest.fn(() =>
+    Promise.resolve(
+      chatResponseWithStations('Here is a station:', [makeGasStation('Shell')], []),
+    ),
+  ) as unknown as typeof fetch;
+
+  let renderer: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      <FavoritesProvider>
+        <LocationProvider>
+          <ChatScreen
+          persistedChat={INITIAL_PERSISTED_CHAT}
+          onChatComplete={jest.fn()}
+          gasTabLocation={null}
+          evTabLocation={null}
+        />
+        </LocationProvider>
+      </FavoritesProvider>,
+    );
+  });
+
+  await typeAndSend(renderer!, 'gas near me?');
+
+  expect(
+    renderer!.root.findByType(StationDetailModal).props.station,
+  ).toBeNull();
+
+  await act(async () => {
+    renderer!.root.findByType(StationCard).props.onPress();
+  });
+
+  expect(
+    renderer!.root.findByType(StationDetailModal).props.station?.name,
+  ).toBe('Shell');
+
+  await act(async () => {
+    renderer!.root.findByType(StationDetailModal).props.onClose();
+  });
+
+  expect(
+    renderer!.root.findByType(StationDetailModal).props.station,
+  ).toBeNull();
 });
 
 it('renders no cards for a plain text-only reply', async () => {
